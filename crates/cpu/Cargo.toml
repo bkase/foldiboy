@@ -1,0 +1,14 @@
+[package]
+name = "cpu"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+memory = { path = "../memory" }
+
+[lints]
+workspace = true
