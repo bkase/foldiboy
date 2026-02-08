@@ -1,7 +1,11 @@
 #![allow(unsafe_code)]
 
+mod app_state;
 mod bus;
+mod debug_panel;
+mod font;
 mod joypad;
+mod rom_browser;
 mod timer;
 
 wit_bindgen::generate!({
@@ -23,8 +27,11 @@ export!(Nightboy);
 
 use wasi::{graphics_context::graphics_context, surface::surface, webgpu::webgpu};
 
+use app_state::{AppFocus, AppState, DebugTab, EmulatorState};
 use bus::GameBoyBus;
+use debug_panel::render_no_rom_placeholder;
 use joypad::Button;
+use rom_browser::BrowserAction;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,6 +39,11 @@ use joypad::Button;
 
 const GB_W: u32 = 160;
 const GB_H: u32 = 144;
+
+/// Logical canvas: two 160x144 panels side by side.
+const CANVAS_W: u32 = GB_W * 2; // 320
+const CANVAS_H: u32 = GB_H; // 144
+const CANVAS_ASPECT: f32 = CANVAS_W as f32 / CANVAS_H as f32; // 20:9
 
 const SHADER_CODE: &str = r#"
 struct Uniforms {
@@ -76,101 +88,51 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 // ---------------------------------------------------------------------------
-// Transform computation (aspect-ratio preserving scale + offset)
+// Viewport computation (aspect-ratio preserving dual panels)
 // ---------------------------------------------------------------------------
 
-fn compute_transform(win_w: u32, win_h: u32) -> [f32; 4] {
-    const GB_ASPECT: f32 = GB_W as f32 / GB_H as f32;
+/// A viewport rectangle in pixel coordinates.
+struct Viewport {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
 
-    let win_aspect = win_w as f32 / win_h as f32;
+/// Compute two side-by-side viewports that fit a 320x144 logical canvas
+/// into the window while preserving aspect ratio.
+fn compute_dual_viewports(win_w: u32, win_h: u32) -> (Viewport, Viewport) {
+    let win_w = win_w.max(1) as f32;
+    let win_h = win_h.max(1) as f32;
+    let win_aspect = win_w / win_h;
 
-    if win_aspect >= GB_ASPECT {
-        // Window wider than GB: pillarbox (black bars on sides)
-        let scale_x = win_aspect / GB_ASPECT;
-        let offset_x = -(scale_x - 1.0) / 2.0;
-        [scale_x, 1.0, offset_x, 0.0]
+    let (canvas_px_w, canvas_px_h) = if win_aspect >= CANVAS_ASPECT {
+        // Window is wider than canvas: fit to height, pillarbox
+        (win_h * CANVAS_ASPECT, win_h)
     } else {
-        // Window taller than GB: letterbox (black bars top/bottom)
-        let scale_y = GB_ASPECT / win_aspect;
-        let offset_y = -(scale_y - 1.0) / 2.0;
-        [1.0, scale_y, 0.0, offset_y]
-    }
-}
+        // Window is taller than canvas: fit to width, letterbox
+        (win_w, win_w / CANVAS_ASPECT)
+    };
 
-// ---------------------------------------------------------------------------
-// ROM loading
-// ---------------------------------------------------------------------------
+    let panel_w = canvas_px_w / 2.0;
+    let panel_h = canvas_px_h;
+    let offset_x = (win_w - canvas_px_w) / 2.0;
+    let offset_y = (win_h - canvas_px_h) / 2.0;
 
-fn load_rom() -> Vec<u8> {
-    use wasi::filesystem::preopens;
+    let left = Viewport {
+        x: offset_x,
+        y: offset_y,
+        width: panel_w,
+        height: panel_h,
+    };
+    let right = Viewport {
+        x: offset_x + panel_w,
+        y: offset_y,
+        width: panel_w,
+        height: panel_h,
+    };
 
-    let dirs = preopens::get_directories();
-    for (descriptor, path) in &dirs {
-        wasi_println(&format!("nightboy: preopen '{}' available", path));
-        if let Some(rom) = find_rom_in(descriptor) {
-            return rom;
-        }
-    }
-    panic!("nightboy: no .gb ROM found in any preopened directory");
-}
-
-/// Recursively search a directory descriptor for the first `.gb` file.
-fn find_rom_in(dir: &wasi::filesystem::types::Descriptor) -> Option<Vec<u8>> {
-    use wasi::filesystem::types as fs;
-
-    let entries = dir.read_directory().ok()?;
-    let mut subdirs = Vec::new();
-
-    loop {
-        match entries.read_directory_entry() {
-            Ok(Some(entry)) => {
-                let name = &entry.name;
-                match entry.type_ {
-                    fs::DescriptorType::RegularFile
-                        if name.ends_with(".gb") || name.ends_with(".gbc") =>
-                    {
-                        wasi_println(&format!("nightboy: loading ROM '{}'", name));
-                        let child = dir
-                            .open_at(
-                                fs::PathFlags::SYMLINK_FOLLOW,
-                                name,
-                                fs::OpenFlags::empty(),
-                                fs::DescriptorFlags::READ,
-                            )
-                            .ok()?;
-                        let stat = child.stat().ok()?;
-                        let (data, _eof) = child.read(stat.size, 0).ok()?;
-                        return Some(data);
-                    }
-                    fs::DescriptorType::Directory => {
-                        subdirs.push(name.clone());
-                    }
-                    _ => {}
-                }
-            }
-            Ok(None) => break,
-            Err(_) => break,
-        }
-    }
-
-    // Recurse into subdirectories
-    for subdir_name in subdirs {
-        let child_dir = dir
-            .open_at(
-                fs::PathFlags::SYMLINK_FOLLOW,
-                &subdir_name,
-                fs::OpenFlags::DIRECTORY,
-                fs::DescriptorFlags::READ,
-            )
-            .ok();
-        if let Some(ref child) = child_dir {
-            if let Some(rom) = find_rom_in(child) {
-                return Some(rom);
-            }
-        }
-    }
-
-    None
+    (left, right)
 }
 
 // ---------------------------------------------------------------------------
@@ -256,11 +218,86 @@ fn upload_framebuffer(queue: &webgpu::GpuQueue, texture: &webgpu::GpuTexture, pi
     );
 }
 
-fn render_frame(
+/// Create a 160x144 RGBA8 texture.
+fn create_panel_texture(device: &webgpu::GpuDevice, label: &str) -> webgpu::GpuTexture {
+    device.create_texture(&webgpu::GpuTextureDescriptor {
+        size: webgpu::GpuExtent3D {
+            width: GB_W,
+            height: Some(GB_H),
+            depth_or_array_layers: Some(1),
+        },
+        mip_level_count: Some(1),
+        sample_count: Some(1),
+        dimension: Some(webgpu::GpuTextureDimension::D2),
+        format: webgpu::GpuTextureFormat::Rgba8unormSrgb,
+        usage: webgpu::GpuTextureUsage::texture_binding() | webgpu::GpuTextureUsage::copy_dst(),
+        view_formats: None,
+        label: Some(label.to_string()),
+    })
+}
+
+/// Create a 16-byte uniform buffer with identity transform.
+fn create_identity_uniform(device: &webgpu::GpuDevice, label: &str) -> webgpu::GpuBuffer {
+    let buf = device.create_buffer(&webgpu::GpuBufferDescriptor {
+        size: 16,
+        usage: webgpu::GpuBufferUsage::uniform() | webgpu::GpuBufferUsage::copy_dst(),
+        mapped_at_creation: None,
+        label: Some(label.to_string()),
+    });
+    // Identity: scale=(1,1), offset=(0,0)
+    let identity: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
+    let bytes: Vec<u8> = identity.iter().flat_map(|f| f.to_le_bytes()).collect();
+    device
+        .queue()
+        .write_buffer_with_copy(&buf, 0, &bytes, None, None)
+        .unwrap();
+    buf
+}
+
+/// Create a bind group for a panel (texture + sampler + uniform).
+fn create_panel_bind_group(
+    device: &webgpu::GpuDevice,
+    layout: &webgpu::GpuBindGroupLayout,
+    texture_view: &webgpu::GpuTextureView,
+    sampler: &webgpu::GpuSampler,
+    uniform_buffer: &webgpu::GpuBuffer,
+    label: &str,
+) -> webgpu::GpuBindGroup {
+    device.create_bind_group(&webgpu::GpuBindGroupDescriptor {
+        layout,
+        entries: vec![
+            webgpu::GpuBindGroupEntry {
+                binding: 0,
+                resource: webgpu::GpuBindingResource::GpuTextureView(texture_view),
+            },
+            webgpu::GpuBindGroupEntry {
+                binding: 1,
+                resource: webgpu::GpuBindingResource::GpuSampler(sampler),
+            },
+            webgpu::GpuBindGroupEntry {
+                binding: 2,
+                resource: webgpu::GpuBindingResource::GpuBufferBinding(
+                    webgpu::GpuBufferBinding {
+                        buffer: uniform_buffer,
+                        offset: None,
+                        size: None,
+                    },
+                ),
+            },
+        ],
+        label: Some(label.to_string()),
+    })
+}
+
+/// Render both panels with dual viewports in a single render pass.
+fn render_frame_dual(
     device: &webgpu::GpuDevice,
     graphics_context: &graphics_context::Context,
     render_pipeline: &webgpu::GpuRenderPipeline,
-    bind_group: &webgpu::GpuBindGroup,
+    gb_bind_group: &webgpu::GpuBindGroup,
+    debug_bind_group: &webgpu::GpuBindGroup,
+    left_vp: &Viewport,
+    right_vp: &Viewport,
 ) {
     let graphics_buffer = graphics_context.get_current_buffer();
     let surface_texture = webgpu::GpuTexture::from_graphics_buffer(graphics_buffer);
@@ -269,7 +306,7 @@ fn render_frame(
 
     {
         let render_pass = encoder.begin_render_pass(&webgpu::GpuRenderPassDescriptor {
-            label: Some("gb_render_pass".to_string()),
+            label: Some("dual_render_pass".to_string()),
             color_attachments: vec![Some(webgpu::GpuRenderPassColorAttachment {
                 view: &surface_view,
                 depth_slice: None,
@@ -290,28 +327,30 @@ fn render_frame(
         });
 
         render_pass.set_pipeline(render_pipeline);
+
+        // Left panel: Game Boy screen
+        render_pass.set_viewport(
+            left_vp.x, left_vp.y, left_vp.width, left_vp.height, 0.0, 1.0,
+        );
         render_pass
-            .set_bind_group(0, Some(bind_group), None, None, None)
+            .set_bind_group(0, Some(gb_bind_group), None, None, None)
             .unwrap();
         render_pass.draw(3, None, None, None);
+
+        // Right panel: Debug panel
+        render_pass.set_viewport(
+            right_vp.x, right_vp.y, right_vp.width, right_vp.height, 0.0, 1.0,
+        );
+        render_pass
+            .set_bind_group(0, Some(debug_bind_group), None, None, None)
+            .unwrap();
+        render_pass.draw(3, None, None, None);
+
         render_pass.end();
     }
 
     device.queue().submit(&[&encoder.finish(None)]);
     graphics_context.present();
-}
-
-fn handle_resize(
-    queue: &webgpu::GpuQueue,
-    uniform_buffer: &webgpu::GpuBuffer,
-    win_w: u32,
-    win_h: u32,
-) {
-    let transform = compute_transform(win_w, win_h);
-    let bytes: Vec<u8> = transform.iter().flat_map(|f| f.to_le_bytes()).collect();
-    queue
-        .write_buffer_with_copy(uniform_buffer, 0, &bytes, None, None)
-        .unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -334,25 +373,7 @@ fn run_emulator() {
 
     // --- Create persistent GPU resources (ONCE) ---
 
-    // Framebuffer texture: 160x144 RGBA8
-    let fb_texture = device.create_texture(&webgpu::GpuTextureDescriptor {
-        size: webgpu::GpuExtent3D {
-            width: GB_W,
-            height: Some(GB_H),
-            depth_or_array_layers: Some(1),
-        },
-        mip_level_count: Some(1),
-        sample_count: Some(1),
-        dimension: Some(webgpu::GpuTextureDimension::D2),
-        format: webgpu::GpuTextureFormat::Rgba8unormSrgb,
-        usage: webgpu::GpuTextureUsage::texture_binding()
-            | webgpu::GpuTextureUsage::copy_dst(),
-        view_formats: None,
-        label: Some("gb_framebuffer".to_string()),
-    });
-    let fb_texture_view = fb_texture.create_view(None);
-
-    // Sampler: nearest-neighbor, clamp-to-edge
+    // Sampler: nearest-neighbor, clamp-to-edge (shared by both panels)
     let sampler = device.create_sampler(Some(&webgpu::GpuSamplerDescriptor {
         address_mode_u: Some(webgpu::GpuAddressMode::ClampToEdge),
         address_mode_v: Some(webgpu::GpuAddressMode::ClampToEdge),
@@ -367,22 +388,10 @@ fn run_emulator() {
         label: Some("gb_sampler".to_string()),
     }));
 
-    // Uniform buffer: 16 bytes for transform vec4<f32>
-    let uniform_buffer = device.create_buffer(&webgpu::GpuBufferDescriptor {
-        size: 16,
-        usage: webgpu::GpuBufferUsage::uniform() | webgpu::GpuBufferUsage::copy_dst(),
-        mapped_at_creation: None,
-        label: Some("gb_uniform".to_string()),
-    });
-
-    // Write initial transform (assume 800x600 default)
-    handle_resize(&device.queue(), &uniform_buffer, 800, 600);
-
-    // Bind group layout: texture@0, sampler@1, uniform@2
+    // Bind group layout (shared)
     let bind_group_layout =
         device.create_bind_group_layout(&webgpu::GpuBindGroupLayoutDescriptor {
             entries: vec![
-                // @binding(0): texture (fragment only)
                 webgpu::GpuBindGroupLayoutEntry {
                     binding: 0,
                     visibility: webgpu::GpuShaderStage::fragment(),
@@ -395,7 +404,6 @@ fn run_emulator() {
                     }),
                     storage_texture: None,
                 },
-                // @binding(1): sampler (fragment only)
                 webgpu::GpuBindGroupLayoutEntry {
                     binding: 1,
                     visibility: webgpu::GpuShaderStage::fragment(),
@@ -406,7 +414,6 @@ fn run_emulator() {
                     texture: None,
                     storage_texture: None,
                 },
-                // @binding(2): uniform buffer (vertex + fragment)
                 webgpu::GpuBindGroupLayoutEntry {
                     binding: 2,
                     visibility: webgpu::GpuShaderStage::vertex()
@@ -421,34 +428,34 @@ fn run_emulator() {
                     storage_texture: None,
                 },
             ],
-            label: Some("gb_bind_group_layout".to_string()),
+            label: Some("panel_bind_group_layout".to_string()),
         });
 
-    // Bind group
-    let bind_group = device.create_bind_group(&webgpu::GpuBindGroupDescriptor {
-        layout: &bind_group_layout,
-        entries: vec![
-            webgpu::GpuBindGroupEntry {
-                binding: 0,
-                resource: webgpu::GpuBindingResource::GpuTextureView(&fb_texture_view),
-            },
-            webgpu::GpuBindGroupEntry {
-                binding: 1,
-                resource: webgpu::GpuBindingResource::GpuSampler(&sampler),
-            },
-            webgpu::GpuBindGroupEntry {
-                binding: 2,
-                resource: webgpu::GpuBindingResource::GpuBufferBinding(
-                    webgpu::GpuBufferBinding {
-                        buffer: &uniform_buffer,
-                        offset: None,
-                        size: None,
-                    },
-                ),
-            },
-        ],
-        label: Some("gb_bind_group".to_string()),
-    });
+    // --- Game Boy panel resources ---
+    let gb_texture = create_panel_texture(&device, "gb_framebuffer");
+    let gb_texture_view = gb_texture.create_view(None);
+    let gb_uniform = create_identity_uniform(&device, "gb_uniform");
+    let gb_bind_group = create_panel_bind_group(
+        &device,
+        &bind_group_layout,
+        &gb_texture_view,
+        &sampler,
+        &gb_uniform,
+        "gb_bind_group",
+    );
+
+    // --- Debug panel resources ---
+    let debug_texture = create_panel_texture(&device, "debug_framebuffer");
+    let debug_texture_view = debug_texture.create_view(None);
+    let debug_uniform = create_identity_uniform(&device, "debug_uniform");
+    let debug_bind_group = create_panel_bind_group(
+        &device,
+        &bind_group_layout,
+        &debug_texture_view,
+        &sampler,
+        &debug_uniform,
+        "debug_bind_group",
+    );
 
     // Shader + pipeline
     let shader_module = device.create_shader_module(&webgpu::GpuShaderModuleDescriptor {
@@ -496,11 +503,13 @@ fn run_emulator() {
             layout: webgpu::GpuLayoutMode::Specific(&pipeline_layout),
         });
 
-    // --- Emulator init ---
-    let rom = load_rom();
-    let bus = GameBoyBus::new(rom);
-    let mut cpu = cpu::GbCpu::new(bus);
-    wasi_println("nightboy: emulator initialized");
+    // --- Application state ---
+    let mut app = AppState::new();
+    let no_rom_fb = render_no_rom_placeholder();
+    wasi_println("nightboy: initialized (press ESC to toggle focus)");
+
+    // Viewport state
+    let mut viewports = compute_dual_viewports(800, 600);
 
     // --- Subscribe to events ---
     let frame_pollable = canvas.subscribe_frame();
@@ -527,24 +536,25 @@ fn run_emulator() {
 
         // Resize
         if events.contains(&1) {
-            let event = canvas.get_resize();
-            if let Some(e) = event {
-                handle_resize(&device.queue(), &uniform_buffer, e.width, e.height);
+            if let Some(e) = canvas.get_resize() {
+                viewports = compute_dual_viewports(e.width, e.height);
             }
         }
 
-        // Key events → joypad
+        // Key down
         if events.contains(&2) {
             if let Some(e) = canvas.get_key_down() {
                 if let Some(key) = e.key {
-                    handle_key(&mut cpu.bus.joypad, key, true);
+                    handle_key_down(&mut app, key);
                 }
             }
         }
+
+        // Key up
         if events.contains(&3) {
             if let Some(e) = canvas.get_key_up() {
                 if let Some(key) = e.key {
-                    handle_key(&mut cpu.bus.joypad, key, false);
+                    handle_key_up(&mut app, key);
                 }
             }
         }
@@ -560,26 +570,122 @@ fn run_emulator() {
             let _ = canvas.get_pointer_move();
         }
 
+        // Check if a ROM was selected
+        if let Some(rom_data) = app.rom_browser.selected_rom.take() {
+            wasi_println(&format!(
+                "nightboy: ROM loaded ({} bytes)",
+                rom_data.len()
+            ));
+            let bus = GameBoyBus::new(rom_data);
+            let cpu = cpu::GbCpu::new(bus);
+            app.emulator = EmulatorState::Running { cpu };
+            app.focus = AppFocus::Emulator;
+            app.debug_panel.mark_dirty();
+        }
+
         // Frame
         if events.contains(&0) {
             canvas.get_frame();
 
-            // Run emulator until frame complete
-            run_frame(&mut cpu);
+            // Run emulator / get framebuffer
+            let gb_fb = match &mut app.emulator {
+                EmulatorState::Running { cpu } => {
+                    run_frame(cpu);
 
-            // Print any serial output (Blargg test ROMs)
-            if !cpu.bus.serial_output.is_empty() {
-                let msg: String = cpu.bus.serial_output.drain(..).map(|b| b as char).collect();
-                wasi_print(&msg);
-            }
+                    // Print serial output (Blargg test ROMs)
+                    if !cpu.bus.serial_output.is_empty() {
+                        let msg: String =
+                            cpu.bus.serial_output.drain(..).map(|b| b as char).collect();
+                        wasi_print(&msg);
+                    }
 
-            // Upload PPU framebuffer and render
-            let fb = cpu.bus.ppu.framebuffer_rgba8();
-            upload_framebuffer(&device.queue(), &fb_texture, &fb);
-            render_frame(&device, &graphics_context, &render_pipeline, &bind_group);
+                    cpu.bus.ppu.framebuffer_rgba8()
+                }
+                EmulatorState::NoRom => no_rom_fb.clone(),
+            };
+
+            // Render debug panel
+            let debug_fb =
+                app.debug_panel
+                    .render(app.focus, app.active_tab, &app.rom_browser);
+
+            // Upload and render both panels
+            upload_framebuffer(&device.queue(), &gb_texture, &gb_fb);
+            upload_framebuffer(&device.queue(), &debug_texture, debug_fb);
+
+            render_frame_dual(
+                &device,
+                &graphics_context,
+                &render_pipeline,
+                &gb_bind_group,
+                &debug_bind_group,
+                &viewports.0,
+                &viewports.1,
+            );
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Input routing
+// ---------------------------------------------------------------------------
+
+fn handle_key_down(app: &mut AppState, key: surface::Key) {
+    // Escape toggles focus
+    if key == surface::Key::Escape {
+        app.focus = match app.focus {
+            AppFocus::Emulator => AppFocus::DebugPanel,
+            AppFocus::DebugPanel => AppFocus::Emulator,
+        };
+        app.debug_panel.mark_dirty();
+        return;
+    }
+
+    // Tab cycles debug tabs (only one for now)
+    if key == surface::Key::Tab {
+        app.active_tab = match app.active_tab {
+            DebugTab::RomBrowser => DebugTab::RomBrowser, // only one tab
+        };
+        app.debug_panel.mark_dirty();
+        return;
+    }
+
+    match app.focus {
+        AppFocus::Emulator => {
+            if let EmulatorState::Running { cpu } = &mut app.emulator {
+                handle_key(&mut cpu.bus.joypad, key, true);
+            }
+        }
+        AppFocus::DebugPanel => {
+            let action = match key {
+                surface::Key::ArrowUp => Some(BrowserAction::Up),
+                surface::Key::ArrowDown => Some(BrowserAction::Down),
+                surface::Key::Enter => Some(BrowserAction::Open),
+                surface::Key::Backspace => Some(BrowserAction::Back),
+                _ => None,
+            };
+            if let Some(action) = action {
+                app.rom_browser.handle_input(action);
+                app.debug_panel.mark_dirty();
+            }
+        }
+    }
+}
+
+fn handle_key_up(app: &mut AppState, key: surface::Key) {
+    if key == surface::Key::Escape || key == surface::Key::Tab {
+        return;
+    }
+    if let AppFocus::Emulator = app.focus {
+        if let EmulatorState::Running { cpu } = &mut app.emulator {
+            handle_key(&mut cpu.bus.joypad, key, false);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WASI I/O helpers
+// ---------------------------------------------------------------------------
 
 fn wasi_println(msg: &str) {
     let out = wasi::cli::stdout::get_stdout();
