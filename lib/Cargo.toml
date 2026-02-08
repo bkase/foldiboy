@@ -4,3 +4,6 @@ resolver = "2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+
+[workspace.dependencies]
+wit-bindgen = "0.41"

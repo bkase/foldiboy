@@ -12,3 +12,4 @@ memory = { path = "../memory" }
 
 [lints]
 workspace = true
+

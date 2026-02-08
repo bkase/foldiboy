@@ -1,0 +1,21 @@
+[package]
+name = "nightboy-desktop"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.5.17", features = ["derive"] }
+pollster = "0.3.0"
+wasmtime = "41.0"
+wasmtime-wasi = "41.0"
+wasmtime-wasi-io = "41.0"
+tokio = { version = "1.40.0", features = ["full"] }
+env_logger = "0.11.5"
+log = "0.4.22"
+anyhow = "1.0.89"
+wasi-graphics-context-wasmtime = { git = "https://github.com/wasi-gfx/wasi-gfx-runtime.git", rev = "067d92d0eabd264e15486b9cecbb9f7020257b7b" }
+wasi-surface-wasmtime = { git = "https://github.com/wasi-gfx/wasi-gfx-runtime.git", rev = "067d92d0eabd264e15486b9cecbb9f7020257b7b", features = ["winit"] }
+wasi-webgpu-wasmtime = { git = "https://github.com/wasi-gfx/wasi-gfx-runtime.git", rev = "067d92d0eabd264e15486b9cecbb9f7020257b7b" }
+wasi-frame-buffer-wasmtime = { git = "https://github.com/wasi-gfx/wasi-gfx-runtime.git", rev = "067d92d0eabd264e15486b9cecbb9f7020257b7b" }

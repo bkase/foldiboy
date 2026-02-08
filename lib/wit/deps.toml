@@ -1,0 +1,23 @@
+[webgpu]
+url = "https://github.com/WebAssembly/wasi-gfx/archive/refs/heads/v0.0.1.tar.gz"
+prefix = "wasi-gfx-0.0.1/webgpu"
+
+[surface]
+url = "https://github.com/WebAssembly/wasi-gfx/archive/refs/heads/v0.0.1.tar.gz"
+prefix = "wasi-gfx-0.0.1/surface"
+
+[graphics-context]
+url = "https://github.com/WebAssembly/wasi-gfx/archive/refs/heads/v0.0.1.tar.gz"
+prefix = "wasi-gfx-0.0.1/graphics-context"
+
+[frame-buffer]
+url = "https://github.com/WebAssembly/wasi-gfx/archive/refs/heads/v0.0.1.tar.gz"
+prefix = "wasi-gfx-0.0.1/frame-buffer"
+
+# TODO: update to WASI monorepo https://github.com/bytecodealliance/wit-deps/issues/341
+[cli]
+url = "https://github.com/WebAssembly/wasi-cli/archive/refs/tags/v0.2.0.tar.gz"
+prefix = "wasi-cli-0.2.0/wit"
+[io]
+url = "https://github.com/WebAssembly/wasi-io/archive/refs/tags/v0.2.0.tar.gz"
+prefix = "wasi-io-0.2.0/wit"

@@ -406,13 +406,22 @@ impl<B: Bus> GbCpu<B> {
                 self.ime_delay = Some(1);
             }
             InterruptCtl::Halt => {
-                // Check for halt bug: IME=false but interrupt pending
                 let ie = self.bus.read(0xFFFF);
                 let if_reg = self.bus.read(0xFF0F);
-                if !self.ime && (ie & if_reg & 0x1F) != 0 {
+                let pending = (ie & if_reg & 0x1F) != 0;
+
+                if !self.ime && self.ime_delay.is_none() && pending {
+                    // Halt bug: IME=false, no EI delay pending, interrupt pending
                     self.halt_bug = true;
                 } else {
                     self.halted = true;
+                    // When HALT enters with pending interrupts that will fire
+                    // immediately (IME already on, or EI delay about to enable it),
+                    // the return address for the interrupt dispatch is the HALT
+                    // instruction itself, not the instruction after it.
+                    if pending && (self.ime || self.ime_delay.is_some()) {
+                        self.regs.pc = self.regs.pc.wrapping_sub(1);
+                    }
                 }
             }
         }

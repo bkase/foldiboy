@@ -1,0 +1,14 @@
+package nightstream:nightboy;
+
+world app {
+    import wasi:webgpu/webgpu@0.0.1;
+    import wasi:graphics-context/graphics-context@0.0.1;
+    import wasi:surface/surface@0.0.1;
+    include wasi:frame-buffer/imports@0.0.1;
+
+    import wasi:cli/stdin@0.2.0;
+    import wasi:cli/stdout@0.2.0;
+    import wasi:cli/stderr@0.2.0;
+
+    export wasi:cli/run@0.2.0;
+}

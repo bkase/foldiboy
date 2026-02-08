@@ -44,8 +44,17 @@ impl<B: Bus> GbCpu<B> {
             let if_reg = self.bus.read(0xFF0F);
             if (ie & if_reg & 0x1F) != 0 {
                 self.halted = false;
-                // If IME is set, the interrupt will be handled below
-                // If IME is not set, execution resumes at next instruction
+                if self.ime {
+                    // Wake from HALT with IME: dispatch interrupt directly.
+                    // The return address (current PC) is already correct:
+                    // - halt+1 for normal halt wake (PC advanced during HALT decode)
+                    // - halt for EI+HALT case (PC backed up during HALT execution)
+                    let int_cycles = self.handle_interrupts();
+                    let total = 1 + int_cycles;
+                    self.total_cycles += total as u64;
+                    return total;
+                }
+                // IME=false: execution resumes at next instruction (no dispatch)
             } else {
                 // Still halted — consume 1 M-cycle
                 self.total_cycles += 1;
@@ -119,6 +128,10 @@ impl<B: Bus> GbCpu<B> {
         let vector = 0x0040u16 + (bit as u16) * 8;
         let synthetic = GbInstruction::Jumps(Jump::CallN16(vector));
         self.execute(synthetic);
+
+        // Clear halted in case we dispatched during the same step as entering halt
+        // (e.g. EI + HALT with pending interrupts)
+        self.halted = false;
 
         // Interrupt dispatch costs 5 M-cycles (CALL N16 is 6, minus 1 for no fetch)
         5
