@@ -12,9 +12,12 @@ This workspace contains the **reference emulator** — a standalone, fully teste
 
 ```
 nightboy/
-  crates/
+  lib/crates    Implementation of the emulator itself
     cpu/        Pure SM83 CPU: decode, execute, ALU, registers (all 512 opcodes)
     memory/     Bus trait, TestBus, BlarggBus test harness
+    render/     Rendering logic for the screen was a Wasm Component for a host the implements WebGPU
+  host/         Different frontends for running the emulator
+    desktop/    wasmtime-based desktop app using wasi-gfx to extend the host to support WebGPU
 ```
 
 The **Nightstream integration** (the provable version) lives in the Nightstream repo:

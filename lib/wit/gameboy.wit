@@ -6,6 +6,9 @@ world app {
     import wasi:surface/surface@0.0.1;
     include wasi:frame-buffer/imports@0.0.1;
 
+    import wasi:filesystem/types@0.2.0;
+    import wasi:filesystem/preopens@0.2.0;
+
     import wasi:cli/stdin@0.2.0;
     import wasi:cli/stdout@0.2.0;
     import wasi:cli/stderr@0.2.0;

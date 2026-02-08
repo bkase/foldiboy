@@ -29,7 +29,13 @@ impl HostState {
     fn new(main_thread_proxy: wasi_surface_wasmtime::WasiWinitEventLoopProxy) -> Self {
         Self {
             table: ResourceTable::new(),
-            ctx: WasiCtxBuilder::new().inherit_stdio().inherit_stdout().inherit_stderr().build(),
+            ctx: WasiCtxBuilder::new()
+                .inherit_stdio()
+                .inherit_stdout()
+                .inherit_stderr()
+                .preopened_dir("../../roms", "roms", wasmtime_wasi::DirPerms::READ, wasmtime_wasi::FilePerms::READ)
+                .expect("failed to preopen roms directory")
+                .build(),
             instance: Arc::new(wasi_webgpu_wasmtime::reexports::wgpu_core::global::Global::new(
                 "webgpu",
                 &wasi_webgpu_wasmtime::reexports::wgpu_types::InstanceDescriptor {

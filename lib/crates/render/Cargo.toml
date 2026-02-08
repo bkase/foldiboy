@@ -8,6 +8,9 @@ workspace = true
 
 [dependencies]
 wit-bindgen.workspace = true
+cpu = { path = "../cpu" }
+memory = { path = "../memory" }
+ppu = { path = "../ppu" }
 
 [lib]
 crate-type = ["cdylib"]
