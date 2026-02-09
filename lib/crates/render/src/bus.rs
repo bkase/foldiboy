@@ -131,6 +131,7 @@ pub struct GameBoyBus {
     // I/O
     pub joypad: Joypad,
     pub timer: Timer,
+    pub apu: apu::Apu,
     pub if_reg: u8, // 0xFF0F — interrupt flag
     pub ie_reg: u8, // 0xFFFF — interrupt enable
 
@@ -216,6 +217,7 @@ impl GameBoyBus {
             hram: [0; 127],
             joypad: Joypad::new(),
             timer: Timer::new(),
+            apu: apu::Apu::new(),
             if_reg: 0,
             ie_reg: 0,
             serial_data: 0,
@@ -388,6 +390,7 @@ impl Bus for GameBoyBus {
             0xFF02 => self.serial_control | 0x7E, // SC: bits 1-6 unused, always 1 on DMG
             0xFF04..=0xFF07 => self.timer.read(addr),
             0xFF0F => self.if_reg | 0xE0, // IF: bits 5-7 unused, always 1
+            0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.read_register(addr),
             0xFF46 => self.dma_reg,
             0xFF40..=0xFF4B => self.ppu.read_register(addr),
 
@@ -397,7 +400,7 @@ impl Bus for GameBoyBus {
             // Interrupt Enable
             0xFFFF => self.ie_reg,
 
-            // Unmapped I/O, APU stubs, etc.
+            // Unmapped I/O
             _ => 0xFF,
         }
     }
@@ -505,6 +508,7 @@ impl Bus for GameBoyBus {
             }
             0xFF04..=0xFF07 => self.timer.write(addr, value),
             0xFF0F => self.if_reg = value,
+            0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.write_register(addr, value),
             0xFF46 => {
                 self.dma_reg = value;
                 self.oam_dma(value);
@@ -524,7 +528,7 @@ impl Bus for GameBoyBus {
             // Interrupt Enable
             0xFFFF => self.ie_reg = value,
 
-            // Unmapped I/O, APU stubs, etc.
+            // Unmapped I/O
             _ => {}
         }
     }

@@ -15,6 +15,8 @@ tokio = { version = "1.40.0", features = ["full"] }
 env_logger = "0.11.5"
 log = "0.4.22"
 anyhow = "1.0.89"
+cpal = "0.15"
+ringbuf = "0.4"
 wasi-graphics-context-wasmtime = { git = "https://github.com/wasi-gfx/wasi-gfx-runtime.git", rev = "067d92d0eabd264e15486b9cecbb9f7020257b7b" }
 wasi-surface-wasmtime = { git = "https://github.com/wasi-gfx/wasi-gfx-runtime.git", rev = "067d92d0eabd264e15486b9cecbb9f7020257b7b", features = ["winit"] }
 wasi-webgpu-wasmtime = { git = "https://github.com/wasi-gfx/wasi-gfx-runtime.git", rev = "067d92d0eabd264e15486b9cecbb9f7020257b7b" }

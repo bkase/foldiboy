@@ -25,6 +25,7 @@ impl exports::wasi::cli::run::Guest for Nightboy {
 
 export!(Nightboy);
 
+use nightstream::audio::audio as ns_audio;
 use wasi::{graphics_context::graphics_context, surface::surface, webgpu::webgpu};
 
 use app_state::{AppFocus, AppState, DebugTab, EmulatorState};
@@ -160,6 +161,9 @@ fn run_frame(cpu: &mut cpu::GbCpu<GameBoyBus>) {
         if ppu_interrupts.stat {
             cpu.bus.if_reg |= 0x02; // STAT interrupt flag
         }
+
+        // Update APU
+        cpu.bus.apu.update(m_cycles);
 
         // Frame complete?
         if ppu_event == ppu::PpuEvent::FrameComplete {
@@ -503,6 +507,12 @@ fn run_emulator() {
             layout: webgpu::GpuLayoutMode::Specific(&pipeline_layout),
         });
 
+    // --- Audio output ---
+    let audio_output = ns_audio::AudioOutput::new(ns_audio::AudioConfig {
+        sample_rate: 48000,
+        channels: 2,
+    });
+
     // --- Application state ---
     let mut app = AppState::new();
     let no_rom_fb = render_no_rom_placeholder();
@@ -597,6 +607,12 @@ fn run_emulator() {
                         let msg: String =
                             cpu.bus.serial_output.drain(..).map(|b| b as char).collect();
                         wasi_print(&msg);
+                    }
+
+                    // Push audio samples to host
+                    let samples = cpu.bus.apu.drain_samples();
+                    if !samples.is_empty() {
+                        audio_output.write(&samples);
                     }
 
                     cpu.bus.ppu.framebuffer_rgba8()

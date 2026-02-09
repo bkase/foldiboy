@@ -1,3 +1,5 @@
+mod audio;
+
 use anyhow::Context;
 use clap::Parser;
 use std::sync::Arc;
@@ -68,6 +70,8 @@ impl WasiView for HostState {
 impl WasiGraphicsContextView for HostState {}
 impl WasiFrameBufferView for HostState {}
 
+impl audio::AudioView for HostState {}
+
 struct UiThreadSpawner(wasi_surface_wasmtime::WasiWinitEventLoopProxy);
 
 impl wasi_webgpu_wasmtime::MainThreadSpawner for UiThreadSpawner {
@@ -115,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
     wasi_graphics_context_wasmtime::add_to_linker(&mut linker)?;
     wasi_surface_wasmtime::add_only_surface_to_linker(&mut linker)?;
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+    audio::add_to_linker(&mut linker)?;
 
     let (main_thread_loop, main_thread_proxy) =
         wasi_surface_wasmtime::create_wasi_winit_event_loop();

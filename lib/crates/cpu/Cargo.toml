@@ -10,6 +10,9 @@ std = []
 [dependencies]
 memory = { path = "../memory" }
 
+[dev-dependencies]
+apu = { path = "../apu" }
+
 [lints]
 workspace = true
 

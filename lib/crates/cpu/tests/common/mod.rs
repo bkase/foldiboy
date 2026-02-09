@@ -17,6 +17,8 @@ pub struct GameBoyTestBus {
     timer_overflow: bool, // TIMA overflowed — request interrupt
     // V-Blank state
     scanline_counter: u32, // T-cycle counter within current frame
+    // APU
+    pub apu: apu::Apu,
 }
 
 impl GameBoyTestBus {
@@ -31,6 +33,7 @@ impl GameBoyTestBus {
             timer_counter: 0,
             timer_overflow: false,
             scanline_counter: 0,
+            apu: apu::Apu::new(),
         }
     }
 
@@ -42,8 +45,11 @@ impl GameBoyTestBus {
         String::from_utf8_lossy(&self.serial_output).to_string()
     }
 
-    /// Tick the timer by `m_cycles` M-cycles (each = 4 T-cycles).
+    /// Tick the timer and APU by `m_cycles` M-cycles (each = 4 T-cycles).
     pub fn tick_timer(&mut self, m_cycles: u32) {
+        // Update APU
+        self.apu.update(m_cycles);
+
         let t_cycles = m_cycles * 4;
 
         for _ in 0..t_cycles {
@@ -104,6 +110,7 @@ impl Bus for GameBoyTestBus {
             0xFF06 => self.tma,                        // TMA
             0xFF07 => self.tac | 0xF8,                   // TAC: bits 3-7 unused, always 1
             0xFF0F => self.inner.read(addr) | 0xE0,   // IF: upper 3 bits always read as 1
+            0xFF10..=0xFF3F => self.apu.read_register(addr),
             _ => self.inner.read(addr),
         }
     }
@@ -130,6 +137,7 @@ impl Bus for GameBoyTestBus {
                 }
                 self.tac = value;
             }
+            0xFF10..=0xFF3F => self.apu.write_register(addr, value),
             _ => self.inner.write(addr, value),
         }
     }
@@ -146,6 +154,16 @@ pub fn make_cpu(rom_path: &str) -> Result<GbCpu<GameBoyTestBus>, String> {
     cpu.regs.pc = 0x0100;
     cpu.bus.write(0xFF0F, 0x00); // IF
     cpu.bus.write(0xFFFF, 0x00); // IE
+
+    // DMG post-boot APU state: power on, CH1 active, default mixing
+    cpu.bus.apu.write_register(0xFF26, 0x80); // NR52: power on
+    cpu.bus.apu.write_register(0xFF24, 0x77); // NR50: max volume both terminals
+    cpu.bus.apu.write_register(0xFF25, 0xF3); // NR51: CH1+CH2 left, CH1 right
+    // CH1 initial state (NR10=$80, NR11=$BF, NR12=$F3, NR14=$BF on DMG)
+    cpu.bus.apu.write_register(0xFF10, 0x80); // NR10: sweep off
+    cpu.bus.apu.write_register(0xFF11, 0xBF); // NR11: duty=2, length=63
+    cpu.bus.apu.write_register(0xFF12, 0xF3); // NR12: vol=15, down, period=3
+
     Ok(cpu)
 }
 

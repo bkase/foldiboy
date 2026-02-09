@@ -13,5 +13,7 @@ world app {
     import wasi:cli/stdout@0.2.0;
     import wasi:cli/stderr@0.2.0;
 
+    import nightstream:audio/audio@0.0.1;
+
     export wasi:cli/run@0.2.0;
 }
