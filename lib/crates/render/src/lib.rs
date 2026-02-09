@@ -48,6 +48,7 @@ use nightstream::audio::audio as ns_audio;
 use wasi::{graphics_context::graphics_context, surface::surface, webgpu::webgpu};
 
 use app_state::{AppFocus, AppState, DebugTab, EmulatorState};
+use font::ROWS as CHAR_ROWS;
 use bus::GameBoyBus;
 use debug_panel::render_no_rom_placeholder;
 use joypad::Button;
@@ -153,6 +154,64 @@ fn compute_dual_viewports(win_w: u32, win_h: u32) -> (Viewport, Viewport) {
     };
 
     (left, right)
+}
+
+// ---------------------------------------------------------------------------
+// Panel hit testing
+// ---------------------------------------------------------------------------
+
+/// Which panel was clicked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelSide {
+    Left,
+    Right,
+}
+
+/// Test which panel a pointer event landed in.
+/// Returns the panel side and panel-relative coordinates normalised to 0.0..1.0.
+fn hit_test_panel(
+    x: f64,
+    y: f64,
+    left_vp: &Viewport,
+    right_vp: &Viewport,
+) -> Option<(PanelSide, f64, f64)> {
+    // Check left panel
+    let lx = x as f32 - left_vp.x;
+    let ly = y as f32 - left_vp.y;
+    if lx >= 0.0 && lx < left_vp.width && ly >= 0.0 && ly < left_vp.height {
+        return Some((
+            PanelSide::Left,
+            lx as f64 / left_vp.width as f64,
+            ly as f64 / left_vp.height as f64,
+        ));
+    }
+
+    // Check right panel
+    let rx = x as f32 - right_vp.x;
+    let ry = y as f32 - right_vp.y;
+    if rx >= 0.0 && rx < right_vp.width && ry >= 0.0 && ry < right_vp.height {
+        return Some((
+            PanelSide::Right,
+            rx as f64 / right_vp.width as f64,
+            ry as f64 / right_vp.height as f64,
+        ));
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Framebuffer dimming
+// ---------------------------------------------------------------------------
+
+/// Dim an RGBA8 framebuffer by multiplying each R, G, B by 3/4.
+fn dim_framebuffer(fb: &mut [u8]) {
+    for pixel in fb.chunks_exact_mut(4) {
+        pixel[0] = (pixel[0] as u16 * 3 / 4) as u8;
+        pixel[1] = (pixel[1] as u16 * 3 / 4) as u8;
+        pixel[2] = (pixel[2] as u16 * 3 / 4) as u8;
+        // alpha unchanged
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +599,11 @@ fn run_emulator() {
     // Viewport state
     let mut viewports = compute_dual_viewports(800, 600);
 
+    // Double-click detection state
+    let mut frame_count: u32 = 0;
+    let mut last_click_frame: u32 = 0;
+    let mut last_click_entry: Option<usize> = None;
+
     // --- Subscribe to events ---
     let frame_pollable = canvas.subscribe_frame();
     let resize_pollable = canvas.subscribe_resize();
@@ -588,12 +652,60 @@ fn run_emulator() {
             }
         }
 
-        // Pointer events (consume, no-op for now)
+        // Pointer events
         if events.contains(&4) {
             let _ = canvas.get_pointer_up();
         }
         if events.contains(&5) {
-            let _ = canvas.get_pointer_down();
+            if let Some(e) = canvas.get_pointer_down() {
+                if let Some((side, _rel_x, rel_y)) =
+                    hit_test_panel(e.x, e.y, &viewports.0, &viewports.1)
+                {
+                    match side {
+                        PanelSide::Left => {
+                            if app.focus != AppFocus::Emulator {
+                                app.focus = AppFocus::Emulator;
+                                app.debug_panel.mark_dirty();
+                            }
+                        }
+                        PanelSide::Right => {
+                            if app.focus != AppFocus::DebugPanel {
+                                app.focus = AppFocus::DebugPanel;
+                                app.debug_panel.mark_dirty();
+                            }
+                            // ROM browser click handling
+                            if app.active_tab == DebugTab::RomBrowser {
+                                let char_row =
+                                    (rel_y * CHAR_ROWS as f64) as usize;
+                                // Rows 2..=16 are entry rows
+                                if char_row >= 2 && char_row < 2 + 15 {
+                                    let entry_idx =
+                                        app.rom_browser.scroll_offset() + (char_row - 2);
+                                    if entry_idx < app.rom_browser.entry_count() {
+                                        // Double-click detection
+                                        let is_double_click = last_click_entry
+                                            == Some(entry_idx)
+                                            && frame_count.wrapping_sub(last_click_frame) < 30;
+
+                                        if is_double_click {
+                                            app.rom_browser
+                                                .handle_input(BrowserAction::Open);
+                                            last_click_entry = None;
+                                        } else {
+                                            app.rom_browser.handle_input(
+                                                BrowserAction::Select(entry_idx),
+                                            );
+                                            last_click_entry = Some(entry_idx);
+                                        }
+                                        last_click_frame = frame_count;
+                                        app.debug_panel.mark_dirty();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         if events.contains(&6) {
             let _ = canvas.get_pointer_move();
@@ -615,9 +727,10 @@ fn run_emulator() {
         // Frame
         if events.contains(&0) {
             canvas.get_frame();
+            frame_count = frame_count.wrapping_add(1);
 
             // Run emulator / get framebuffer
-            let gb_fb = match &mut app.emulator {
+            let mut gb_fb = match &mut app.emulator {
                 EmulatorState::Running { cpu } => {
                     run_frame(cpu);
 
@@ -639,14 +752,26 @@ fn run_emulator() {
                 EmulatorState::NoRom => no_rom_fb.clone(),
             };
 
-            // Render debug panel
+            // Dim game screen when not focused
+            if app.focus != AppFocus::Emulator {
+                dim_framebuffer(&mut gb_fb);
+            }
+
+            // Render debug panel (dim when not focused)
             let debug_fb =
                 app.debug_panel
                     .render(app.focus, app.active_tab, &app.rom_browser);
+            let debug_fb = if app.focus != AppFocus::DebugPanel {
+                let mut dimmed = debug_fb.to_vec();
+                dim_framebuffer(&mut dimmed);
+                dimmed
+            } else {
+                debug_fb.to_vec()
+            };
 
             // Upload and render both panels
             upload_framebuffer(&device.queue(), &gb_texture, &gb_fb);
-            upload_framebuffer(&device.queue(), &debug_texture, debug_fb);
+            upload_framebuffer(&device.queue(), &debug_texture, &debug_fb);
 
             render_frame_dual(
                 &device,

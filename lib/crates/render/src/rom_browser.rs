@@ -28,6 +28,8 @@ pub enum BrowserAction {
     Down,
     Open,
     Back,
+    /// Jump cursor to a specific entry index (clamped to bounds).
+    Select(usize),
 }
 
 /// Text-based ROM file browser.
@@ -56,6 +58,22 @@ impl RomBrowser {
         };
         browser.scan_current_dir();
         browser
+    }
+
+    /// Current cursor position.
+    #[allow(dead_code)]
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Number of entries in the current listing.
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// First visible entry index.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
     }
 
     /// Build the current path string from the path stack.
@@ -146,6 +164,11 @@ impl RomBrowser {
                     _ => a.name().to_ascii_lowercase().cmp(&b.name().to_ascii_lowercase()),
                 }
             });
+
+            // Prepend ".." entry when inside a subdirectory
+            if !self.path_stack.is_empty() {
+                self.entries.insert(0, FsEntry::Directory { name: "..".to_string() });
+            }
         }
     }
 
@@ -200,6 +223,13 @@ impl RomBrowser {
             BrowserAction::Open => {
                 if let Some(entry) = self.entries.get(self.cursor).cloned() {
                     match entry {
+                        FsEntry::Directory { name } if name == ".." => {
+                            // Treat ".." as Back
+                            if !self.path_stack.is_empty() {
+                                self.path_stack.pop();
+                                self.scan_current_dir();
+                            }
+                        }
                         FsEntry::Directory { name } => {
                             self.path_stack.push(name);
                             self.scan_current_dir();
@@ -221,6 +251,18 @@ impl RomBrowser {
                 if !self.path_stack.is_empty() {
                     self.path_stack.pop();
                     self.scan_current_dir();
+                }
+            }
+            BrowserAction::Select(idx) => {
+                if self.entries.is_empty() {
+                    return;
+                }
+                self.cursor = idx.min(self.entries.len() - 1);
+                // Adjust scroll to keep cursor visible
+                if self.cursor < self.scroll_offset {
+                    self.scroll_offset = self.cursor;
+                } else if self.cursor >= self.scroll_offset + VISIBLE_ROWS {
+                    self.scroll_offset = self.cursor - VISIBLE_ROWS + 1;
                 }
             }
         }
@@ -287,7 +329,7 @@ impl RomBrowser {
         for col in 0..COLS {
             buf.set_cell(col, ROWS - 1, Cell { ch: b' ', fg: help_fg, bg: help_bg });
         }
-        buf.put_str(0, ROWS - 1, "ESC:emu  ENT:open", help_fg, help_bg);
+        buf.put_str(0, ROWS - 1, "ESC:emu  dblclk:open", help_fg, help_bg);
     }
 }
 
@@ -431,5 +473,97 @@ mod tests {
         browser.render(&mut buf);
         let pixels = buf.render_rgba8();
         assert_eq!(pixels.len(), 160 * 144 * 4);
+    }
+
+    #[test]
+    fn select_sets_cursor() {
+        let mut browser = RomBrowser::with_entries(sample_entries());
+        browser.handle_input(BrowserAction::Select(2));
+        assert_eq!(browser.cursor(), 2);
+    }
+
+    #[test]
+    fn select_clamps_to_bounds() {
+        let mut browser = RomBrowser::with_entries(sample_entries());
+        browser.handle_input(BrowserAction::Select(100));
+        assert_eq!(browser.cursor(), 3); // 4 entries, max index 3
+    }
+
+    #[test]
+    fn select_on_empty_is_noop() {
+        let mut browser = RomBrowser::with_entries(vec![]);
+        browser.handle_input(BrowserAction::Select(5));
+        assert_eq!(browser.cursor(), 0);
+    }
+
+    #[test]
+    fn select_adjusts_scroll_forward() {
+        let entries: Vec<FsEntry> = (0..20)
+            .map(|i| FsEntry::RomFile {
+                name: format!("rom{:02}.gb", i),
+            })
+            .collect();
+        let mut browser = RomBrowser::with_entries(entries);
+        browser.handle_input(BrowserAction::Select(18));
+        assert!(browser.scroll_offset() > 0);
+        assert!(browser.cursor() < browser.scroll_offset() + VISIBLE_ROWS);
+    }
+
+    #[test]
+    fn select_adjusts_scroll_backward() {
+        let entries: Vec<FsEntry> = (0..20)
+            .map(|i| FsEntry::RomFile {
+                name: format!("rom{:02}.gb", i),
+            })
+            .collect();
+        let mut browser = RomBrowser::with_entries(entries);
+        // Scroll down first
+        browser.handle_input(BrowserAction::Select(18));
+        assert!(browser.scroll_offset() > 0);
+        // Select back to top
+        browser.handle_input(BrowserAction::Select(0));
+        assert_eq!(browser.scroll_offset(), 0);
+        assert_eq!(browser.cursor(), 0);
+    }
+
+    #[test]
+    fn getters_return_correct_values() {
+        let browser = RomBrowser::with_entries(sample_entries());
+        assert_eq!(browser.cursor(), 0);
+        assert_eq!(browser.entry_count(), 4);
+        assert_eq!(browser.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn dotdot_entry_opens_as_back() {
+        // Simulate being in a subdirectory by manually constructing
+        let mut browser = RomBrowser {
+            path_stack: vec!["subdir".to_string()],
+            entries: vec![
+                FsEntry::Directory { name: "..".to_string() },
+                FsEntry::RomFile { name: "test.gb".to_string() },
+            ],
+            cursor: 0,
+            scroll_offset: 0,
+            selected_rom: None,
+        };
+        // Opening ".." should pop path_stack (scan_current_dir is a no-op in test)
+        browser.handle_input(BrowserAction::Open);
+        assert!(browser.path_stack.is_empty());
+    }
+
+    #[test]
+    fn dotdot_at_root_is_noop() {
+        let mut browser = RomBrowser {
+            path_stack: Vec::new(),
+            entries: vec![
+                FsEntry::Directory { name: "..".to_string() },
+            ],
+            cursor: 0,
+            scroll_offset: 0,
+            selected_rom: None,
+        };
+        browser.handle_input(BrowserAction::Open);
+        assert!(browser.path_stack.is_empty());
     }
 }
