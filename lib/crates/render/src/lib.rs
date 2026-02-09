@@ -1,3 +1,22 @@
+//! WASM Component entry point for Nightboy.
+//!
+//! This crate is the `cdylib` that gets compiled to `wasm32-wasip2` and wrapped
+//! into a WASM Component. It wires together the CPU, PPU, APU, timer, joypad,
+//! and memory bus into a frame-driven emulation loop, and bridges to the host
+//! via WIT interfaces for graphics (wasi-gfx / WebGPU), audio
+//! (nightstream:audio), filesystem (wasi:filesystem), and input (wasi:surface).
+//!
+//! ## Frame loop
+//!
+//! Each iteration of the event loop:
+//! 1. Poll WASI surface events (resize, key down/up, pointer, frame)
+//! 2. On frame tick: call `run_frame()` which steps the CPU until the PPU
+//!    signals `FrameComplete`, updating timer, PPU, and APU each instruction
+//! 3. Upload the 160x144 RGBA8 framebuffer to a WebGPU texture
+//! 4. Drain APU samples and push them to the host via `audio-output.write()`
+//! 5. Render both panels (GB screen + debug panel) in a single render pass
+//!    with dual viewports
+
 #![allow(unsafe_code)]
 
 mod app_state;
