@@ -1,10 +1,49 @@
 use memory::Bus;
 
 use crate::instruction::decode::decode;
-use crate::instruction::{GbInstruction, Jump};
 use crate::registers::RegisterFile;
 
 /// SM83 CPU for the Game Boy.
+///
+/// # Boot ROM
+///
+/// We skip the boot ROM entirely. `GbCpu::new()` initialises registers to
+/// the values a DMG leaves after the boot ROM finishes (see
+/// [`RegisterFile::post_boot_dmg`]) and starts execution at PC=$0100.
+/// I/O registers that the boot ROM would normally configure (LCDC, BGP,
+/// etc.) are left at their hardware-reset defaults; the loaded ROM is
+/// expected to set them itself, which all well-behaved ROMs do.
+///
+/// This means any Mooneye test that checks state *left behind by the boot
+/// ROM* (e.g. `boot_sclk_align`, `boot_div`, `boot_hwio`, `boot_regs`) will fail.
+/// These tests are irrelevant to our use case (ZK proving of game
+/// execution).
+///
+/// # Instruction-level granularity (deliberately simplified for ZK)
+///
+/// Each [`step()`](Self::step) call executes one instruction atomically:
+/// all bus reads/writes happen during `step()`, then the caller advances
+/// the timer and PPU by the returned M-cycle count. We do **not** model
+/// per-M-cycle bus activity within an instruction.
+///
+/// On real hardware, a multi-cycle instruction interleaves its M-cycles
+/// with the rest of the system — for example, the high and low bytes of a
+/// PUSH land on specific M-cycles, and OAM DMA blocks OAM reads for
+/// exactly 160 M-cycles. Several Mooneye tests probe this sub-instruction
+/// timing by checking whether a memory access falls inside or outside an
+/// active OAM DMA window. These tests are incompatible with our
+/// instruction-level architecture and are deliberately skipped:
+///
+/// - **Sub-instruction memory-access timing** (14 tests):
+///   `add_sp_e_timing`, `ld_hl_sp_e_timing`, `call_timing`,
+///   `call_timing2`, `call_cc_timing`, `call_cc_timing2`, `jp_timing`,
+///   `jp_cc_timing`, `push_timing`, `pop_timing`, `ret_timing`,
+///   `ret_cc_timing`, `reti_timing`, `rst_timing`.
+///
+/// - **PPU-dependent halt timing** (1 test):
+///   `halt_ime0_nointr_timing` — measures DIV across a HALT-to-VBlank
+///   boundary; depends on exact PPU dot alignment we deliberately
+///   simplified (see [`ppu::Ppu`] docs).
 pub struct GbCpu<B: Bus> {
     pub regs: RegisterFile,
     pub bus: B,
@@ -102,6 +141,11 @@ impl<B: Bus> GbCpu<B> {
 
     /// Check and handle pending interrupts.
     /// Returns additional M-cycles consumed (0 or 5).
+    ///
+    /// Hardware-accurate dispatch: the PC push to the stack happens in two
+    /// separate writes (high byte first).  If SP-1 == 0xFFFF the high-byte
+    /// write lands on the IE register, which can cancel or redirect the
+    /// interrupt before the low byte is pushed.
     fn handle_interrupts(&mut self) -> u32 {
         if !self.ime {
             return 0;
@@ -115,25 +159,37 @@ impl<B: Bus> GbCpu<B> {
             return 0;
         }
 
-        // Find lowest set bit (highest priority)
-        let bit = pending.trailing_zeros() as u8;
-
-        // Clear the IF bit
-        self.bus.write(0xFF0F, if_reg & !(1 << bit));
-
         // Disable IME
         self.ime = false;
 
-        // Dispatch as synthetic CALL to interrupt vector
-        let vector = 0x0040u16 + (bit as u16) * 8;
-        let synthetic = GbInstruction::Jumps(Jump::CallN16(vector));
-        self.execute(synthetic);
+        // Push PC high byte — may write to 0xFFFF (IE) when SP == 0x0000
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        self.bus.write(self.regs.sp, (self.regs.pc >> 8) as u8);
+
+        // Re-read IE & IF: the push above may have changed IE
+        let ie2 = self.bus.read(0xFFFF);
+        let if2 = self.bus.read(0xFF0F);
+        let pending2 = ie2 & if2 & 0x1F;
+
+        // Push PC low byte
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        self.bus.write(self.regs.sp, self.regs.pc as u8);
+
+        if pending2 == 0 {
+            // Interrupt cancelled — jump to $0000, IF unchanged
+            self.regs.pc = 0x0000;
+        } else {
+            // Dispatch highest-priority interrupt from the *updated* pending set
+            let bit = pending2.trailing_zeros() as u8;
+            self.bus.write(0xFF0F, if2 & !(1 << bit));
+            self.regs.pc = 0x0040u16 + (bit as u16) * 8;
+        }
 
         // Clear halted in case we dispatched during the same step as entering halt
         // (e.g. EI + HALT with pending interrupts)
         self.halted = false;
 
-        // Interrupt dispatch costs 5 M-cycles (CALL N16 is 6, minus 1 for no fetch)
+        // Interrupt dispatch costs 5 M-cycles
         5
     }
 }

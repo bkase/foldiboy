@@ -403,7 +403,13 @@ impl<B: Bus> GbCpu<B> {
                 self.ime_delay = None;
             }
             InterruptCtl::Ei => {
-                self.ime_delay = Some(1);
+                // Don't overwrite a delay that is about to fire (Some(0)).
+                // Back-to-back EI instructions must still enable IME after
+                // the first delay expires; resetting to Some(1) would
+                // prevent the interrupt from ever being dispatched.
+                if self.ime_delay != Some(0) {
+                    self.ime_delay = Some(1);
+                }
             }
             InterruptCtl::Halt => {
                 let ie = self.bus.read(0xFFFF);
@@ -718,6 +724,14 @@ mod tests {
         cpu.execute(GbInstruction::Interrupt(InterruptCtl::Ei));
         assert_eq!(cpu.ime_delay, Some(1));
         assert!(!cpu.ime); // not yet
+    }
+
+    #[test]
+    fn ei_does_not_overwrite_pending() {
+        let mut cpu = new_cpu();
+        cpu.ime_delay = Some(0); // about to fire
+        cpu.execute(GbInstruction::Interrupt(InterruptCtl::Ei));
+        assert_eq!(cpu.ime_delay, Some(0), "EI must not reset a pending delay");
     }
 
     #[test]

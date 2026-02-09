@@ -98,11 +98,12 @@ impl GameBoyTestBus {
 impl Bus for GameBoyTestBus {
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
-            0xFF04 => (self.div_counter >> 8) as u8, // DIV
-            0xFF05 => self.tima,                      // TIMA
-            0xFF06 => self.tma,                       // TMA
-            0xFF07 => self.tac,                       // TAC
-            0xFF0F => self.inner.read(addr) | 0xE0,  // IF: upper 3 bits always read as 1
+            0xFF02 => self.inner.read(addr) | 0x7E,  // SC: bits 1-6 unused, always 1 on DMG
+            0xFF04 => (self.div_counter >> 8) as u8,  // DIV
+            0xFF05 => self.tima,                       // TIMA
+            0xFF06 => self.tma,                        // TMA
+            0xFF07 => self.tac | 0xF8,                   // TAC: bits 3-7 unused, always 1
+            0xFF0F => self.inner.read(addr) | 0xE0,   // IF: upper 3 bits always read as 1
             _ => self.inner.read(addr),
         }
     }

@@ -1,3 +1,32 @@
+//! DMG Pixel Processing Unit.
+//!
+//! # Timing model — deliberate simplification
+//!
+//! This PPU uses **fixed** mode durations per scanline (80 / 172 / 204 dots for
+//! modes 2 / 3 / 0) rather than the variable timing of real hardware where
+//! mode 3 length depends on SCX scroll offset, sprite count/position, and
+//! window state.
+//!
+//! This is intentional: the PPU will eventually be proven inside a ZK circuit,
+//! and variable-length mode 3 would add significant constraint complexity
+//! (per-scanline sprite counting, SCX-dependent branching) for negligible
+//! benefit — no commercially released DMG game depends on sub-scanline timing.
+//!
+//! **What works:** Mode sequencing, STAT IRQ blocking (edge-triggered internal
+//! line), LYC coincidence, OAM/VBlank/HBlank STAT sources, VBlank-triggers-OAM
+//! quirk, LCD on/off state freezing. All 11 Blargg cpu_instrs tests pass, plus
+//! Mooneye `stat_irq_blocking`, `stat_lyc_onoff`, and `vblank_stat_intr-GS`.
+//!
+//! **Known failing (by design):** Mooneye dot-precise timing tests that require
+//! variable mode 3 duration or exact LCD-enable boot sequencing:
+//! - `hblank_ly_scx_timing-GS` — SCX-dependent mode 3 / mode 0 split
+//! - `intr_1_2_timing-GS` — mode 1→2 transition cycle boundary
+//! - `intr_2_0_timing` — mode 2→0 transition cycle boundary
+//! - `intr_2_mode0_timing` — mode 2→mode 0 polling boundary
+//! - `intr_2_oam_ok_timing` — OAM accessibility window boundary
+//! - `lcdon_timing-GS` — exact STAT/LY state after LCD enable
+//! - `lcdon_write_timing-GS` — OAM/VRAM accessibility after LCD enable
+
 pub mod registers;
 pub mod vram;
 pub mod oam;
@@ -90,6 +119,12 @@ pub struct Ppu {
     clock: u32,
     window_line: u8,
     window_triggered: bool,
+    /// Previous state of the internal STAT interrupt line (for edge detection).
+    stat_irq_line: bool,
+    /// STAT interrupt pending from a register write (cleared by next update).
+    pending_stat_irq: bool,
+    /// First mode-0 after LCD enable: transition to mode 2 without LY increment.
+    lcd_just_enabled: bool,
 }
 
 impl Ppu {
@@ -112,7 +147,41 @@ impl Ppu {
             clock: 0,
             window_line: 0,
             window_triggered: false,
+            stat_irq_line: false,
+            pending_stat_irq: false,
+            lcd_just_enabled: false,
         }
+    }
+
+    /// Take any pending STAT interrupt from a register write.
+    /// Returns true (and clears the flag) if a STAT interrupt should fire.
+    pub fn take_pending_stat_irq(&mut self) -> bool {
+        let pending = self.pending_stat_irq;
+        self.pending_stat_irq = false;
+        pending
+    }
+
+    /// Evaluate the internal STAT interrupt line and detect rising edges.
+    ///
+    /// On real hardware, the STAT interrupt fires on a LOW→HIGH transition
+    /// of the OR of all enabled STAT conditions. This prevents duplicate
+    /// interrupts while any condition remains active ("STAT IRQ blocking").
+    fn eval_stat_line(&mut self) -> bool {
+        let mode = self.stat.mode();
+        // DMG quirk: mode 1 (VBlank) also triggers the OAM (mode 2) source.
+        let signal = (mode == 0 && self.stat.hblank_int())
+            || (mode == 1 && (self.stat.vblank_int() || self.stat.oam_int()))
+            || (mode == 2 && self.stat.oam_int())
+            || (self.stat.lyc_eq_ly() && self.stat.lyc_int());
+
+        let rising_edge = signal && !self.stat_irq_line;
+        self.stat_irq_line = signal;
+        rising_edge
+    }
+
+    /// Update the LYC == LY coincidence flag.
+    fn update_lyc_flag(&mut self) {
+        self.stat.set_lyc_eq_ly(self.ly == self.lyc);
     }
 
     /// Advance the PPU by the given number of M-cycles.
@@ -130,6 +199,12 @@ impl Ppu {
         let mut event = PpuEvent::None;
         let mut interrupts = PpuInterrupts::default();
 
+        // Pick up any STAT interrupt from a register write during the CPU step
+        if self.pending_stat_irq {
+            interrupts.stat = true;
+            self.pending_stat_irq = false;
+        }
+
         let mode = self.stat.mode();
         match mode {
             2 => {
@@ -139,6 +214,10 @@ impl Ppu {
                     self.stat.set_mode(3);
                     self.window_triggered =
                         self.window_triggered || self.ly == self.wy;
+                    // Mode 3 clears all mode conditions → line drops
+                    if self.eval_stat_line() {
+                        interrupts.stat = true;
+                    }
                 }
             }
             3 => {
@@ -147,7 +226,7 @@ impl Ppu {
                     self.clock -= 172;
                     self.draw_scanline();
                     self.stat.set_mode(0);
-                    if self.stat.hblank_int() {
+                    if self.eval_stat_line() {
                         interrupts.stat = true;
                     }
                 }
@@ -156,22 +235,27 @@ impl Ppu {
                 // HBlank → next line after 204 dots
                 if self.clock >= 204 {
                     self.clock -= 204;
-                    self.ly += 1;
-                    self.check_lyc(&mut interrupts);
 
-                    if self.ly >= 144 {
-                        // Enter VBlank
-                        self.stat.set_mode(1);
-                        interrupts.vblank = true;
-                        if self.stat.vblank_int() {
-                            interrupts.stat = true;
-                        }
-                        event = PpuEvent::FrameComplete;
-                    } else {
+                    if self.lcd_just_enabled {
+                        // First transition after LCD enable: go to mode 2
+                        // for line 0 without incrementing LY.
+                        self.lcd_just_enabled = false;
                         self.stat.set_mode(2);
-                        if self.stat.oam_int() {
-                            interrupts.stat = true;
+                    } else {
+                        self.ly += 1;
+                        self.update_lyc_flag();
+
+                        if self.ly >= 144 {
+                            // Enter VBlank
+                            self.stat.set_mode(1);
+                            interrupts.vblank = true;
+                            event = PpuEvent::FrameComplete;
+                        } else {
+                            self.stat.set_mode(2);
                         }
+                    }
+                    if self.eval_stat_line() {
+                        interrupts.stat = true;
                     }
                 }
             }
@@ -180,18 +264,18 @@ impl Ppu {
                 if self.clock >= 456 {
                     self.clock -= 456;
                     self.ly += 1;
-                    self.check_lyc(&mut interrupts);
+                    self.update_lyc_flag();
 
                     if self.ly > 153 {
                         // Frame complete, start new frame
                         self.ly = 0;
                         self.window_line = 0;
                         self.window_triggered = false;
+                        self.update_lyc_flag();
                         self.stat.set_mode(2);
-                        self.check_lyc(&mut interrupts);
-                        if self.stat.oam_int() {
-                            interrupts.stat = true;
-                        }
+                    }
+                    if self.eval_stat_line() {
+                        interrupts.stat = true;
                     }
                 }
             }
@@ -199,14 +283,6 @@ impl Ppu {
         }
 
         (event, interrupts)
-    }
-
-    fn check_lyc(&mut self, interrupts: &mut PpuInterrupts) {
-        let eq = self.ly == self.lyc;
-        self.stat.set_lyc_eq_ly(eq);
-        if eq && self.stat.lyc_int() {
-            interrupts.stat = true;
-        }
     }
 
     fn draw_scanline(&mut self) {
@@ -277,25 +353,44 @@ impl Ppu {
                 let was_on = self.lcdc.lcd_enable();
                 self.lcdc = Lcdc(val);
                 if was_on && !self.lcdc.lcd_enable() {
-                    // LCD turned off: reset to mode 0
+                    // LCD turned off: freeze state.
+                    // LY resets to 0, mode goes to 0, but the LYC=LY flag
+                    // and STAT IRQ line are preserved (frozen).
                     self.ly = 0;
                     self.clock = 0;
                     self.stat.set_mode(0);
                 }
                 if !was_on && self.lcdc.lcd_enable() {
-                    // LCD turned on: start from mode 2
-                    self.stat.set_mode(2);
+                    // LCD turned on: stay in mode 0 briefly, then transition
+                    // to mode 2 on the first update (without incrementing LY).
                     self.clock = 0;
+                    self.lcd_just_enabled = true;
+                    self.update_lyc_flag();
+                    if self.eval_stat_line() {
+                        self.pending_stat_irq = true;
+                    }
                 }
             }
             0xFF41 => {
                 // Only bits 3-6 are writable
                 self.stat.0 = (self.stat.0 & 0x87) | (val & 0x78);
+                // Changing enable bits can cause a rising edge
+                if self.lcdc.lcd_enable() && self.eval_stat_line() {
+                    self.pending_stat_irq = true;
+                }
             }
             0xFF42 => self.scy = val,
             0xFF43 => self.scx = val,
             0xFF44 => {} // LY is read-only
-            0xFF45 => self.lyc = val,
+            0xFF45 => {
+                self.lyc = val;
+                if self.lcdc.lcd_enable() {
+                    self.update_lyc_flag();
+                    if self.eval_stat_line() {
+                        self.pending_stat_irq = true;
+                    }
+                }
+            }
             0xFF47 => self.bgp = Palette(val),
             0xFF48 => self.obp0 = Palette(val),
             0xFF49 => self.obp1 = Palette(val),
@@ -639,15 +734,20 @@ mod tests {
     }
 
     #[test]
-    fn lcd_on_starts_mode2() {
+    fn lcd_on_starts_mode0_then_mode2() {
         let mut ppu = Ppu::new();
         // Turn LCD off first
         ppu.write_register(0xFF40, 0x00);
         assert_eq!(ppu.stat.mode(), 0);
 
-        // Turn LCD on
+        // Turn LCD on — starts in mode 0 (brief initial period)
         ppu.write_register(0xFF40, 0x91);
+        assert_eq!(ppu.stat.mode(), 0);
+
+        // After 204 dots (51 M-cycles), transitions to mode 2 for line 0
+        ppu.update(51);
         assert_eq!(ppu.stat.mode(), 2);
+        assert_eq!(ppu.ly, 0); // LY stays 0 (no increment on first transition)
     }
 
     #[test]

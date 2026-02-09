@@ -143,7 +143,7 @@ impl RomBrowser {
                     (FsEntry::RomFile { .. }, FsEntry::Directory { .. }) => {
                         std::cmp::Ordering::Greater
                     }
-                    _ => a.name().cmp(b.name()),
+                    _ => a.name().to_ascii_lowercase().cmp(&b.name().to_ascii_lowercase()),
                 }
             });
         }
