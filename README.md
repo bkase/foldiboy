@@ -2,6 +2,21 @@
 
 A Game Boy (DMG) emulator built as a [WASM Component](https://component-model.bytecodealliance.org/), designed for the [Nightstream](../nightstream/) zkVM. The emulator runs as a guest module inside a wasmtime host, communicating through WIT interfaces for graphics, audio, input, and filesystem access.
 
+## Why another Gameboy emulator?
+
+There are multiple requirements that have driven us to create a new Gameboy emulator:
+1. **Efficient provability**: Nightboy is fully ZK-provable. Doing this efficiently requires:
+    1. **Filtered traces**: An easy way to get a trace of all read, write, opcodes that need to be proven by the proof system (most emulators have no way to get traces, let alone stream them in over time)
+    2. **Fine-tuned provability**: Filter out from traces any opcodes that do not need to be proven (ex: some UI and audio state). Note that these can be a bit subtle, as it requires us to error/warn on any game that uses behavior that cannot be proven (ex: the game logic somehow reads from the graphic state - but this is extremely rare in practice)
+    3. **External inputs into proving system**: Manage external input (ex: user inputs) as witnesses injected into the game console (as opposed to them being entirely internal to the emulator)
+    4. **Direct opcode proving**: most attempts to prove other systems work by taking software, compiling to to a known instruction set (riscv, wasm), and then proving this. Since this means that running a single sm83 opcode means proving 10+ riscv opcodes due to compilation overhead, this leads to massive proof overhead. 
+    5. **Disable dangerous features**: some features in the Gameboy like eram (data loaded from save files) cannot be supported, as it would allow injecting unproven state into the system. We have to disable these features in a logical way on a case-by-case basis to ensure there are no attack vectors.
+2. **Containerization**: Nightboy needs to be able to run even on sensitive devices (and therefore cannot trust installing software). To achieve this, we use sandboxing through Wasm of all components. Notably, we do sandboxing through Wasm Components (and not Wasm modules like some other emulators that support this) in order to easily get sandboxing even on the desktop, as well as leverage standards like wasi-gfx for webgpu-rendered UIs (which can be sandboxed)
+
+Note that, despite these many ZK optimizations, Nightboy is not actually hard-coded to any proof system.
+
+You can learn more about subtle points in relation to which component is proven and how in [this document](./docs/provability.md)
+
 ## Architecture
 
 ```
@@ -71,10 +86,12 @@ nightboy/
 │   │           ├── bus.rs          GameBoyBus (full memory map, MBC, OAM DMA, I/O)
 │   │           ├── timer.rs        Timer (falling-edge, shared internal counter)
 │   │           ├── joypad.rs       Joypad (active-low, button mapping)
-│   │           ├── app_state.rs    AppFocus, DebugTab, EmulatorState, AppState
+│   │           ├── app_state.rs    AppFocus, EmulatorState, AppState
 │   │           ├── debug_panel.rs  Debug panel renderer (dirty-flag caching)
 │   │           ├── rom_browser.rs  WASI filesystem ROM browser (TUI)
-│   │           └── font.rs         8x8 bitmap font (96 ASCII glyphs)
+│   │           ├── memory_panel.rs MemoryPanel (owns WideTextBuffer + RamViewer)
+│   │           ├── ram_viewer.rs   RAM viewer: hex dump, tab bar, region switching
+│   │           └── font.rs         8x8 bitmap font, TextGrid<C,R> generic
 │   ├── wit/                    WIT interface definitions
 │   │   ├── gameboy.wit             nightstream:nightboy/app world
 │   │   └── deps/
@@ -104,7 +121,7 @@ nightboy/
 cd host/desktop && ./build.sh
 ```
 
-This builds the guest WASM component, then compiles and runs the host. The host opens a window with two panels: the Game Boy screen (left) and a debug/ROM browser panel (right).
+This builds the guest WASM component, then compiles and runs the host. The host opens a window with three panels (see [Debug UI](#debug-ui) below).
 
 **Run tests:**
 
@@ -114,17 +131,77 @@ cd lib && cargo test
 
 **Controls:**
 
-| Key | Action |
-|-----|--------|
-| Arrow keys | D-pad |
-| X / J | A button |
-| Z / K | B button |
-| Enter | Start |
-| Right Shift | Select |
-| Escape | Toggle focus (emulator / debug panel) |
-| Arrow keys (debug panel) | Navigate ROM browser |
-| Enter (debug panel) | Open directory / load ROM |
-| Backspace (debug panel) | Go up one directory |
+| Key | Context | Action |
+|-----|---------|--------|
+| Arrow keys | Emulator | D-pad |
+| X / J | Emulator | A button |
+| Z / K | Emulator | B button |
+| Enter | Emulator | Start |
+| Right Shift | Emulator | Select |
+| Escape | Any | Toggle focus: Emulator <-> last debug panel |
+| Tab | Debug panels | Cycle focus: ROM Browser <-> RAM Viewer |
+| Up/Down | ROM Browser | Navigate entries |
+| Enter | ROM Browser | Open directory / load ROM |
+| Backspace | ROM Browser | Go up one directory |
+| Up/Down | RAM Viewer | Scroll one row (16 bytes) |
+| PgUp/PgDn | RAM Viewer | Scroll one page (21 rows) |
+| Left/Right | RAM Viewer | Switch memory region |
+| Click | Any panel | Focus that panel |
+| Click tab | RAM Viewer header | Switch to clicked region |
+
+## Debug UI
+
+Three-panel layout at 320x240 logical resolution (4:3 aspect ratio, letterboxed to window):
+
+```
++----------+----------+
+|   Game   |   ROM    |
+| 160x144  |  Browser |
+|          | 160x144  |
++----------+----------+
+|     RAM Viewer      |
+|      320x96         |
++---------------------+
+```
+
+**Focus system:** only one panel is active at a time. The focused panel renders at full brightness; others are dimmed. Escape toggles between Emulator and the last-used debug panel. Tab cycles between ROM Browser and RAM Viewer. Clicking a panel focuses it.
+
+### ROM Browser (top-right)
+
+WASI filesystem browser for loading ROMs. Navigates preopened directories, shows `.gb`/`.gbc` files and subdirectories. Double-click or Enter to open.
+
+### RAM Viewer (bottom)
+
+Hex dump inspector for Game Boy memory. Renders into an 80x24 character grid (640x192 pixels) using an 8x8 bitmap font, then GPU-downscaled to 320x96 via bilinear filtering for half-size text with maximum data density.
+
+**Layout (80 columns x 24 rows):**
+```
+Row  0:  XXXX-XXXX | WRAM VRAM HRAM OAM I/O ERAM    <- header: address range + tab bar
+Row  1:  ADDR: 00 01 02 ... 0F  ASCII                <- column offset headers
+Rows 2-22: XXXX: HH HH HH ... HH  ................  <- 21 data rows (16 bytes each)
+Row 23:  Up/Down:scroll  PgUp/PgDn:page  ...         <- help bar
+```
+
+**Memory regions** are identified by `MemoryRegion` enum variants aligned with Nightstream proof system TwistIds:
+
+| Region | TwistId | Address | Size | Viewable | Notes |
+|--------|---------|---------|------|----------|-------|
+| WRAM | 0 | C000-DFFF | 8 KB | Yes | Work RAM |
+| ROM | 1 | 0000-7FFF | varies | No | Full ROM blob (banked). Not yet in tab bar |
+| Regs | 2 | N/A | N/A | No | CPU registers. Lives on CPU, not bus — needs different render path |
+| VRAM | 3 | 8000-9FFF | 8 KB | Yes | Video RAM (tiles + tile maps) |
+| I/O | 4 | FF00-FF7F | 128 B | Yes | Side-effect-free register reads |
+| HRAM | 5 | FF80-FFFE | 127 B | Yes | High RAM |
+| OAM | 6 | FE00-FE9F | 160 B | Yes | Sprite attribute table |
+| ERAM | 7 | A000-BFFF | varies | Yes | External RAM (banked, shows bank number) |
+
+The tab bar in row 0 shows all 6 viewable regions. The active tab is highlighted (white-on-black). Tabs are clickable, or switch with Left/Right arrow keys.
+
+`read_region(region, offset)` reads bytes by linear offset within each region without bus side effects. For banked regions (ERAM), this reads the currently-mapped bank's data.
+
+**Future additions:**
+- **ROM tab** — infrastructure exists (`read_region` can read the full ROM). Needs bank indicator like ERAM
+- **Registers tab** — requires passing CPU state (AF, BC, DE, HL, SP, PC, flags) into the viewer and a formatted display instead of hex dump
 
 ## Emulator Subsystems
 
@@ -283,7 +360,7 @@ nightboy (reference emulator)            nightstream/sm83 (provable CPU)
 
 ## Test Coverage
 
-291 tests total:
+320 tests total:
 
 | Suite | Count | Description |
 |-------|------:|-------------|
@@ -295,7 +372,7 @@ nightboy (reference emulator)            nightstream/sm83 (provable CPU)
 | SameSuite | 1 | `ei_delay_halt` (EI+HALT interrupt priority) |
 | Memory | 3 | Bus trait, test bus behavior |
 | PPU | 65 | Mode transitions, STAT IRQ, scanline rendering, OAM |
-| Render | 20 | Font, debug panel, ROM browser, app state |
+| Render | 49 | Font, debug panel, ROM browser, RAM viewer, memory panel |
 
 ### Known Failing by Design
 
