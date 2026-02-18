@@ -1,6 +1,6 @@
 # Nightboy
 
-A Game Boy (DMG) emulator built as a [WASM Component](https://component-model.bytecodealliance.org/), designed for the [Nightstream](../nightstream/) zkVM. The emulator runs as a guest module inside a wasmtime host, communicating through WIT interfaces for graphics, audio, input, and filesystem access.
+A Game Boy (DMG) emulator built as a [WASM Component](https://component-model.bytecodealliance.org/), designed for the [Nightstream](https://github.com/LFDT-Nightstream/Nightstream) zkVM. The emulator runs as a guest module inside a wasmtime host, communicating through WIT interfaces for graphics, audio, input, and filesystem access.
 
 ## Why another Gameboy emulator?
 
@@ -15,7 +15,9 @@ There are multiple requirements that have driven us to create a new Gameboy emul
 
 Note that, despite these many ZK optimizations, Nightboy is not actually hard-coded to any proof system.
 
-You can learn more about subtle points in relation to which component is proven and how in [this document](./docs/provability.md)
+You can learn more about subtle points in relation to which component is proven and how in the following folders:
+- human-written managed documentation [here](./docs)
+- AI-assisted documentation [here](./machine-docs/)
 
 ## Architecture
 
@@ -26,11 +28,11 @@ Guest (WASM Component)                    Host (native, wasmtime)
 │  PPU (scanline renderer, 4 modes)    │  │  cpal audio backend       │
 │  APU (4 channels, 48kHz stereo)      │  │  Input event polling      │
 │  Timer (falling-edge model)          │  │  WASI filesystem (ROMs)   │
-│  Bus (MBC1/2/3/5, OAM DMA, I/O)     │  │                           │
+│  Bus (MBC1/2/3/5, OAM DMA, I/O)      │  │                           │
 │  Joypad (active-low, 8 buttons)      │  │                           │
 ├──────────────────────────────────────┤  ├───────────────────────────┤
 │  WIT interfaces:                     │  │  Implements:              │
-│    import wasi:webgpu                │◄─┤    wasi-gfx (WebGPU)     │
+│    import wasi:webgpu                │◄─┤    wasi-gfx (WebGPU)      │
 │    import wasi:surface               │  │    nightstream:audio      │
 │    import nightstream:audio          │  │    wasi:filesystem        │
 │    import wasi:filesystem            │  │    wasi:cli               │
@@ -182,18 +184,7 @@ Rows 2-22: XXXX: HH HH HH ... HH  ................  <- 21 data rows (16 bytes ea
 Row 23:  Up/Down:scroll  PgUp/PgDn:page  ...         <- help bar
 ```
 
-**Memory regions** are identified by `MemoryRegion` enum variants aligned with Nightstream proof system TwistIds:
-
-| Region | TwistId | Address | Size | Viewable | Notes |
-|--------|---------|---------|------|----------|-------|
-| WRAM | 0 | C000-DFFF | 8 KB | Yes | Work RAM |
-| ROM | 1 | 0000-7FFF | varies | No | Full ROM blob (banked). Not yet in tab bar |
-| Regs | 2 | N/A | N/A | No | CPU registers. Lives on CPU, not bus — needs different render path |
-| VRAM | 3 | 8000-9FFF | 8 KB | Yes | Video RAM (tiles + tile maps) |
-| I/O | 4 | FF00-FF7F | 128 B | Yes | Side-effect-free register reads |
-| HRAM | 5 | FF80-FFFE | 127 B | Yes | High RAM |
-| OAM | 6 | FE00-FE9F | 160 B | Yes | Sprite attribute table |
-| ERAM | 7 | A000-BFFF | varies | Yes | External RAM (banked, shows bank number) |
+**Memory regions** are identified by `MemoryRegion` enum variants for the different kinds of RAM
 
 The tab bar in row 0 shows all 6 viewable regions. The active tab is highlighted (white-on-black). Tabs are clickable, or switch with Left/Right arrow keys.
 
@@ -207,7 +198,7 @@ The tab bar in row 0 shows all 6 viewable regions. The active tab is highlighted
 
 ### CPU
 
-Sharp SM83 (often mislabeled as "Z80-like"). All 512 opcodes implemented: 256 main + 256 CB-prefix.
+Sharp SM83. All 512 opcodes implemented: 256 main + 256 CB-prefix.
 
 - **Pure ALU**: `alu_binary()`, `alu_shift()`, `alu_daa()`, etc. — functions return `(result, flags)` without mutation
 - **Atomic instruction execution**: each instruction completes in one `step()` call (deliberate — no sub-instruction timing)
@@ -318,7 +309,11 @@ See `host/desktop/src/audio.rs` for a reference implementation using cpal + ring
 
 ## Design Decisions (ZK Context)
 
-Nightboy is built to eventually run inside the Nightstream zkVM, where every instruction must be provable. Several deliberate simplifications keep the emulator ZK-friendly:
+Nightboy is built to be proven under any zkVM that supports lookups and folding.
+
+We have [provability](./docs/provability.md) docs to keep track of:
+1. Exactly what is provable
+2. What deliberate simplifications we make to keep the emulator ZK-friendly
 
 | Simplification | Rationale |
 |----------------|-----------|
@@ -331,66 +326,6 @@ Nightboy is built to eventually run inside the Nightstream zkVM, where every ins
 
 These trade-offs cause a small number of Mooneye/Blargg tests to fail by design (see [Test Coverage](#test-coverage) below), but do not affect the correctness of game logic for the vast majority of titles.
 
-## Nightstream Integration
+## zk proving via Nightstream Integration
 
-The provable version of the SM83 CPU lives in the Nightstream repo at `nightstream/crates/neo-memory/src/sm83/`. It re-implements the same CPU semantics using Nightstream's trait protocol:
-
-- **`VmCpu`** — trace-producing CPU that records every operation
-- **`Twist`** — memory abstraction that logs every load/store for proving
-- **`Shout`** — lookup tables for ALU operations (proven via lookup arguments, not in-circuit arithmetic)
-
-The reference emulator (`nightboy/lib/crates/cpu/`) is the source of truth for SM83 semantics. The Nightstream integration is cross-validated: every opcode is tested against all 65,536 input pairs for bit-identical ALU behavior, and full programs are compared step-by-step (registers, memory, PC) between both implementations.
-
-```
-nightboy (reference emulator)            nightstream/sm83 (provable CPU)
-┌──────────────────────────────┐         ┌──────────────────────────────┐
-│  GbCpu<Bus>                  │ cross-  │  Sm83Cpu: VmCpu<u16, u16>   │
-│  alu_binary/shift/daa        │ valid.  │  compute_op() via Shout     │
-│  Bus::read/write             │ ──────> │  Twist::load/store          │
-│  All 512 opcodes             │         │  All 512 opcodes            │
-└──────────────────────────────┘         └──────────┬───────────────────┘
-                                                    │ trace_program()
-                                                    ▼
-                                         ┌──────────────────────────────┐
-                                         │  VmTrace → Sm83ExecTable    │
-                                         │  → Event tables             │
-                                         │  → Witness → CCS            │
-                                         └──────────────────────────────┘
-```
-
-## Test Coverage
-
-320 tests total:
-
-| Suite | Count | Description |
-|-------|------:|-------------|
-| APU unit tests | 75 | Channel behavior, frame sequencer, mixer, registers |
-| CPU unit tests | 101 | Opcode execution, flags, interrupts, HALT, EI delay |
-| Blargg cpu_instrs | 14 | 11 test ROMs (some ROMs test multiple sub-tests) |
-| Blargg dmg_sound | 9 | Tests 01-08, 11 (09, 10, 12 ignored — wave RAM) |
-| APU diagnostics | 3 | Channel trigger/length/envelope edge cases |
-| SameSuite | 1 | `ei_delay_halt` (EI+HALT interrupt priority) |
-| Memory | 3 | Bus trait, test bus behavior |
-| PPU | 65 | Mode transitions, STAT IRQ, scanline rendering, OAM |
-| Render | 49 | Font, debug panel, ROM browser, RAM viewer, memory panel |
-
-### Known Failing by Design
-
-**CPU / Bus:**
-- All `boot_*` tests — no boot ROM, execution starts at PC=$0100
-- 14 sub-instruction timing tests — atomic instruction execution
-- 3 OAM DMA timing tests — instantaneous DMA transfer
-- `halt_ime0_nointr_timing` — requires PPU-dependent halt wake timing
-
-**PPU:**
-- 7 Mooneye dot-precise timing tests — fixed mode 3 duration (no SCX/sprite penalties)
-
-**Timer:**
-- `rapid_toggle` — sub-instruction counter offset (8T boundary shift)
-- `tima_write_reloading` — writing TIMA during 4-cycle reload delay
-- `tma_write_reloading` — writing TMA during 4-cycle reload delay
-
-**APU:**
-- Blargg dmg_sound 09, 10, 12 — simplified wave RAM access timing
-
-**Mooneye tests passing:** `ie_push`, `oam_dma/reg_read`, `oam_dma/sources-GS`, `stat_irq_blocking`, `stat_lyc_onoff`, `vblank_stat_intr-GS`, `timer/div_write`, `timer/tim00`, `timer/tim01`, `timer/tim10`, `timer/tim11`, `timer/tima_reload`, `ei_sequence`
+Nightboy is optimized to be integrated with [Nightstream](https://github.com/LFDT-Nightstream/Nightstream), but avoids direct tight coupling (does not depend on any Nightstream-specific crates).
