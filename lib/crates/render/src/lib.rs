@@ -6,16 +6,23 @@
 //! via WIT interfaces for graphics (wasi-gfx / WebGPU), audio
 //! (nightstream:audio), filesystem (wasi:filesystem), and input (wasi:surface).
 //!
-//! ## Frame loop
+//! ## Layout
 //!
-//! Each iteration of the event loop:
-//! 1. Poll WASI surface events (resize, key down/up, pointer, frame)
-//! 2. On frame tick: call `run_frame()` which steps the CPU until the PPU
-//!    signals `FrameComplete`, updating timer, PPU, and APU each instruction
-//! 3. Upload the 160x144 RGBA8 framebuffer to a WebGPU texture
-//! 4. Drain APU samples and push them to the host via `audio-output.write()`
-//! 5. Render both panels (GB screen + debug panel) in a single render pass
-//!    with dual viewports
+//! Four panels:
+//! ```text
+//! +----------+----------+----------+
+//! |   Game   |   ROM    |          |
+//! | 160x144  |  Browser |  Trace   |
+//! |          | 160x144  |  Viewer  |
+//! +----------+----------+ 160x240  |
+//! |   RAM Viewer 320x96 |          |
+//! +---------------------+----------+
+//! ```
+//!
+//! The bottom panel renders at 640x192 (80x24 chars at 8x8) then gets
+//! GPU-downscaled to 320x96 via a linear-filtering sampler. The right trace
+//! panel renders at 320x480 (40x60 chars at 8x8) then gets GPU-downscaled to
+//! 160x240. Both give ~half-size text for maximum data density.
 
 #![allow(unsafe_code)]
 
@@ -24,8 +31,13 @@ mod bus;
 mod debug_panel;
 mod font;
 mod joypad;
+mod memory_panel;
+mod ram_viewer;
 mod rom_browser;
 mod timer;
+mod trace_log;
+mod trace_panel;
+mod trace_viewer;
 
 wit_bindgen::generate!({
     path: "../../wit",
@@ -47,24 +59,39 @@ export!(Nightboy);
 use nightstream::audio::audio as ns_audio;
 use wasi::{graphics_context::graphics_context, surface::surface, webgpu::webgpu};
 
-use app_state::{AppFocus, AppState, DebugTab, EmulatorState};
-use font::ROWS as CHAR_ROWS;
+use app_state::{AppFocus, AppState, EmulatorState};
+use font::{ROWS as CHAR_ROWS, WIDE_COLS as MEM_CHAR_COLS, WIDE_ROWS as MEM_CHAR_ROWS};
 use bus::GameBoyBus;
 use debug_panel::render_no_rom_placeholder;
 use joypad::Button;
+use ram_viewer::ViewerAction;
 use rom_browser::BrowserAction;
+use trace_viewer::{TALL_COLS as TRACE_CHAR_COLS, TALL_ROWS as TRACE_CHAR_ROWS};
 
 // ---------------------------------------------------------------------------
-// Constants
+// Layout constants — four-panel layout
 // ---------------------------------------------------------------------------
 
+/// Game Boy panel size (also top-right debug panel size).
 const GB_W: u32 = 160;
 const GB_H: u32 = 144;
 
-/// Logical canvas: two 160x144 panels side by side.
-const CANVAS_W: u32 = GB_W * 2; // 320
-const CANVAS_H: u32 = GB_H; // 144
-const CANVAS_ASPECT: f32 = CANVAS_W as f32 / CANVAS_H as f32; // 20:9
+/// Memory panel: displayed at 320x96 but rendered into a 640x192 texture.
+const MEM_W: u32 = 320;
+const MEM_H: u32 = 96;
+const MEM_TEX_W: u32 = 640;
+const MEM_TEX_H: u32 = 192;
+
+/// Trace panel: displayed at 160x240 but rendered into a 320x480 texture.
+const TRACE_W: u32 = 160;
+const TRACE_H: u32 = 240;
+const TRACE_TEX_W: u32 = 320;
+const TRACE_TEX_H: u32 = 480;
+
+/// Logical canvas dimensions.
+const CANVAS_W: u32 = MEM_W + TRACE_W;     // 480
+const CANVAS_H: u32 = GB_H + MEM_H;        // 240
+const CANVAS_ASPECT: f32 = CANVAS_W as f32 / CANVAS_H as f32; // 2:1
 
 const SHADER_CODE: &str = r#"
 struct Uniforms {
@@ -109,7 +136,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 // ---------------------------------------------------------------------------
-// Viewport computation (aspect-ratio preserving dual panels)
+// Viewport computation (aspect-ratio preserving triple panels)
 // ---------------------------------------------------------------------------
 
 /// A viewport rectangle in pixel coordinates.
@@ -120,40 +147,66 @@ struct Viewport {
     height: f32,
 }
 
-/// Compute two side-by-side viewports that fit a 320x144 logical canvas
-/// into the window while preserving aspect ratio.
-fn compute_dual_viewports(win_w: u32, win_h: u32) -> (Viewport, Viewport) {
+/// Four viewports for the quad-panel layout.
+struct QuadViewports {
+    game: Viewport,        // top-left: 160x144 logical
+    rom_browser: Viewport, // top-right: 160x144 logical
+    ram_viewer: Viewport,  // bottom-left: 320x96 logical
+    trace: Viewport,       // right: 160x240 logical (full height)
+}
+
+/// Compute four viewports that fit a 480x240 logical canvas into the window
+/// while preserving 2:1 aspect ratio.
+fn compute_viewports(win_w: u32, win_h: u32) -> QuadViewports {
     let win_w = win_w.max(1) as f32;
     let win_h = win_h.max(1) as f32;
     let win_aspect = win_w / win_h;
 
     let (canvas_px_w, canvas_px_h) = if win_aspect >= CANVAS_ASPECT {
-        // Window is wider than canvas: fit to height, pillarbox
+        // Window wider than canvas: fit to height, pillarbox
         (win_h * CANVAS_ASPECT, win_h)
     } else {
-        // Window is taller than canvas: fit to width, letterbox
+        // Window taller than canvas: fit to width, letterbox
         (win_w, win_w / CANVAS_ASPECT)
     };
 
-    let panel_w = canvas_px_w / 2.0;
-    let panel_h = canvas_px_h;
+    let scale = canvas_px_w / CANVAS_W as f32;
     let offset_x = (win_w - canvas_px_w) / 2.0;
     let offset_y = (win_h - canvas_px_h) / 2.0;
 
-    let left = Viewport {
-        x: offset_x,
-        y: offset_y,
-        width: panel_w,
-        height: panel_h,
-    };
-    let right = Viewport {
-        x: offset_x + panel_w,
-        y: offset_y,
-        width: panel_w,
-        height: panel_h,
-    };
+    let top_panel_w = GB_W as f32 * scale;
+    let top_panel_h = GB_H as f32 * scale;
+    let bot_panel_w = MEM_W as f32 * scale;
+    let bot_panel_h = MEM_H as f32 * scale;
+    let trace_panel_w = TRACE_W as f32 * scale;
+    let trace_panel_h = TRACE_H as f32 * scale;
 
-    (left, right)
+    QuadViewports {
+        game: Viewport {
+            x: offset_x,
+            y: offset_y,
+            width: top_panel_w,
+            height: top_panel_h,
+        },
+        rom_browser: Viewport {
+            x: offset_x + top_panel_w,
+            y: offset_y,
+            width: top_panel_w,
+            height: top_panel_h,
+        },
+        ram_viewer: Viewport {
+            x: offset_x,
+            y: offset_y + top_panel_h,
+            width: bot_panel_w,
+            height: bot_panel_h,
+        },
+        trace: Viewport {
+            x: offset_x + bot_panel_w,
+            y: offset_y,
+            width: trace_panel_w,
+            height: trace_panel_h,
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -162,39 +215,37 @@ fn compute_dual_viewports(win_w: u32, win_h: u32) -> (Viewport, Viewport) {
 
 /// Which panel was clicked.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PanelSide {
-    Left,
-    Right,
+enum PanelHit {
+    GameScreen,
+    RomBrowser,
+    RamViewer,
+    TraceViewer,
 }
 
 /// Test which panel a pointer event landed in.
-/// Returns the panel side and panel-relative coordinates normalised to 0.0..1.0.
 fn hit_test_panel(
     x: f64,
     y: f64,
-    left_vp: &Viewport,
-    right_vp: &Viewport,
-) -> Option<(PanelSide, f64, f64)> {
-    // Check left panel
-    let lx = x as f32 - left_vp.x;
-    let ly = y as f32 - left_vp.y;
-    if lx >= 0.0 && lx < left_vp.width && ly >= 0.0 && ly < left_vp.height {
-        return Some((
-            PanelSide::Left,
-            lx as f64 / left_vp.width as f64,
-            ly as f64 / left_vp.height as f64,
-        ));
-    }
+    viewports: &QuadViewports,
+) -> Option<(PanelHit, f64, f64)> {
+    // Check panels in order
+    let panels = [
+        (&viewports.game, PanelHit::GameScreen),
+        (&viewports.rom_browser, PanelHit::RomBrowser),
+        (&viewports.ram_viewer, PanelHit::RamViewer),
+        (&viewports.trace, PanelHit::TraceViewer),
+    ];
 
-    // Check right panel
-    let rx = x as f32 - right_vp.x;
-    let ry = y as f32 - right_vp.y;
-    if rx >= 0.0 && rx < right_vp.width && ry >= 0.0 && ry < right_vp.height {
-        return Some((
-            PanelSide::Right,
-            rx as f64 / right_vp.width as f64,
-            ry as f64 / right_vp.height as f64,
-        ));
+    for (vp, hit) in &panels {
+        let lx = x as f32 - vp.x;
+        let ly = y as f32 - vp.y;
+        if lx >= 0.0 && lx < vp.width && ly >= 0.0 && ly < vp.height {
+            return Some((
+                *hit,
+                lx as f64 / vp.width as f64,
+                ly as f64 / vp.height as f64,
+            ));
+        }
     }
 
     None
@@ -221,7 +272,15 @@ fn dim_framebuffer(fb: &mut [u8]) {
 /// Run the emulator until the PPU signals a frame is complete.
 fn run_frame(cpu: &mut cpu::GbCpu<GameBoyBus>) {
     loop {
+        // Trace: capture state before step
+        let pc_before = cpu.regs.pc;
+        let cycle_before = cpu.total_cycles;
+        cpu.bus.trace_log.begin_step();
+
         let m_cycles = cpu.step();
+
+        // Trace: commit step
+        cpu.bus.trace_log.commit_step(cycle_before, pc_before, m_cycles);
 
         // Update timer
         let timer_overflow = cpu.bus.timer.update(m_cycles);
@@ -272,8 +331,14 @@ fn handle_key(joypad: &mut joypad::Joypad, key: surface::Key, pressed: bool) {
 // GPU helpers
 // ---------------------------------------------------------------------------
 
-fn upload_framebuffer(queue: &webgpu::GpuQueue, texture: &webgpu::GpuTexture, pixels: &[u8]) {
-    debug_assert_eq!(pixels.len(), (GB_W * GB_H * 4) as usize);
+fn upload_framebuffer(
+    queue: &webgpu::GpuQueue,
+    texture: &webgpu::GpuTexture,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) {
+    debug_assert_eq!(pixels.len(), (width * height * 4) as usize);
 
     queue.write_texture_with_copy(
         &webgpu::GpuTexelCopyTextureInfo {
@@ -289,23 +354,28 @@ fn upload_framebuffer(queue: &webgpu::GpuQueue, texture: &webgpu::GpuTexture, pi
         pixels,
         webgpu::GpuTexelCopyBufferLayout {
             offset: Some(0),
-            bytes_per_row: Some(GB_W * 4),
-            rows_per_image: Some(GB_H),
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
         },
         webgpu::GpuExtent3D {
-            width: GB_W,
-            height: Some(GB_H),
+            width,
+            height: Some(height),
             depth_or_array_layers: Some(1),
         },
     );
 }
 
-/// Create a 160x144 RGBA8 texture.
-fn create_panel_texture(device: &webgpu::GpuDevice, label: &str) -> webgpu::GpuTexture {
+/// Create an RGBA8 texture with given dimensions.
+fn create_panel_texture(
+    device: &webgpu::GpuDevice,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> webgpu::GpuTexture {
     device.create_texture(&webgpu::GpuTextureDescriptor {
         size: webgpu::GpuExtent3D {
-            width: GB_W,
-            height: Some(GB_H),
+            width,
+            height: Some(height),
             depth_or_array_layers: Some(1),
         },
         mip_level_count: Some(1),
@@ -371,15 +441,16 @@ fn create_panel_bind_group(
     })
 }
 
-/// Render both panels with dual viewports in a single render pass.
-fn render_frame_dual(
+/// Render four panels in a single render pass with four viewport+draw calls.
+fn render_frame_quad(
     device: &webgpu::GpuDevice,
     graphics_context: &graphics_context::Context,
     render_pipeline: &webgpu::GpuRenderPipeline,
     gb_bind_group: &webgpu::GpuBindGroup,
     debug_bind_group: &webgpu::GpuBindGroup,
-    left_vp: &Viewport,
-    right_vp: &Viewport,
+    mem_bind_group: &webgpu::GpuBindGroup,
+    trace_bind_group: &webgpu::GpuBindGroup,
+    viewports: &QuadViewports,
 ) {
     let graphics_buffer = graphics_context.get_current_buffer();
     let surface_texture = webgpu::GpuTexture::from_graphics_buffer(graphics_buffer);
@@ -388,7 +459,7 @@ fn render_frame_dual(
 
     {
         let render_pass = encoder.begin_render_pass(&webgpu::GpuRenderPassDescriptor {
-            label: Some("dual_render_pass".to_string()),
+            label: Some("quad_render_pass".to_string()),
             color_attachments: vec![Some(webgpu::GpuRenderPassColorAttachment {
                 view: &surface_view,
                 depth_slice: None,
@@ -410,21 +481,35 @@ fn render_frame_dual(
 
         render_pass.set_pipeline(render_pipeline);
 
-        // Left panel: Game Boy screen
-        render_pass.set_viewport(
-            left_vp.x, left_vp.y, left_vp.width, left_vp.height, 0.0, 1.0,
-        );
+        // Top-left: Game Boy screen
+        let vp = &viewports.game;
+        render_pass.set_viewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
         render_pass
             .set_bind_group(0, Some(gb_bind_group), None, None, None)
             .unwrap();
         render_pass.draw(3, None, None, None);
 
-        // Right panel: Debug panel
-        render_pass.set_viewport(
-            right_vp.x, right_vp.y, right_vp.width, right_vp.height, 0.0, 1.0,
-        );
+        // Top-right: ROM browser
+        let vp = &viewports.rom_browser;
+        render_pass.set_viewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
         render_pass
             .set_bind_group(0, Some(debug_bind_group), None, None, None)
+            .unwrap();
+        render_pass.draw(3, None, None, None);
+
+        // Bottom-left: RAM viewer
+        let vp = &viewports.ram_viewer;
+        render_pass.set_viewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
+        render_pass
+            .set_bind_group(0, Some(mem_bind_group), None, None, None)
+            .unwrap();
+        render_pass.draw(3, None, None, None);
+
+        // Right: Trace viewer
+        let vp = &viewports.trace;
+        render_pass.set_viewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
+        render_pass
+            .set_bind_group(0, Some(trace_bind_group), None, None, None)
             .unwrap();
         render_pass.draw(3, None, None, None);
 
@@ -455,8 +540,8 @@ fn run_emulator() {
 
     // --- Create persistent GPU resources (ONCE) ---
 
-    // Sampler: nearest-neighbor, clamp-to-edge (shared by both panels)
-    let sampler = device.create_sampler(Some(&webgpu::GpuSamplerDescriptor {
+    // Sampler: nearest-neighbor for top panels (crisp pixel art)
+    let nearest_sampler = device.create_sampler(Some(&webgpu::GpuSamplerDescriptor {
         address_mode_u: Some(webgpu::GpuAddressMode::ClampToEdge),
         address_mode_v: Some(webgpu::GpuAddressMode::ClampToEdge),
         address_mode_w: Some(webgpu::GpuAddressMode::ClampToEdge),
@@ -467,10 +552,28 @@ fn run_emulator() {
         lod_max_clamp: None,
         compare: None,
         max_anisotropy: None,
-        label: Some("gb_sampler".to_string()),
+        label: Some("nearest_sampler".to_string()),
     }));
 
-    // Bind group layout (shared)
+    // Sampler: linear-filtering for bottom panel (smooth text downscale)
+    let linear_sampler = device.create_sampler(Some(&webgpu::GpuSamplerDescriptor {
+        address_mode_u: Some(webgpu::GpuAddressMode::ClampToEdge),
+        address_mode_v: Some(webgpu::GpuAddressMode::ClampToEdge),
+        address_mode_w: Some(webgpu::GpuAddressMode::ClampToEdge),
+        mag_filter: Some(webgpu::GpuFilterMode::Linear),
+        min_filter: Some(webgpu::GpuFilterMode::Linear),
+        mipmap_filter: Some(webgpu::GpuMipmapFilterMode::Linear),
+        lod_min_clamp: None,
+        lod_max_clamp: None,
+        compare: None,
+        max_anisotropy: None,
+        label: Some("linear_sampler".to_string()),
+    }));
+
+    // Bind group layout — use Filtering sampler type for all panels.
+    // A nearest sampler (non-filtering) is valid with a Filtering binding,
+    // so we share a single layout. The bottom panel uses a linear sampler
+    // for smooth 2x downscale, while top panels keep nearest for crisp pixels.
     let bind_group_layout =
         device.create_bind_group_layout(&webgpu::GpuBindGroupLayoutDescriptor {
             entries: vec![
@@ -491,7 +594,7 @@ fn run_emulator() {
                     visibility: webgpu::GpuShaderStage::fragment(),
                     buffer: None,
                     sampler: Some(webgpu::GpuSamplerBindingLayout {
-                        type_: Some(webgpu::GpuSamplerBindingType::NonFiltering),
+                        type_: Some(webgpu::GpuSamplerBindingType::Filtering),
                     }),
                     texture: None,
                     storage_texture: None,
@@ -510,34 +613,36 @@ fn run_emulator() {
                     storage_texture: None,
                 },
             ],
-            label: Some("panel_bind_group_layout".to_string()),
+            label: Some("bind_group_layout".to_string()),
         });
 
-    // --- Game Boy panel resources ---
-    let gb_texture = create_panel_texture(&device, "gb_framebuffer");
+    // --- Game Boy panel resources (top-left, 160x144) ---
+    let gb_texture = create_panel_texture(&device, "gb_framebuffer", GB_W, GB_H);
     let gb_texture_view = gb_texture.create_view(None);
     let gb_uniform = create_identity_uniform(&device, "gb_uniform");
-    let gb_bind_group = create_panel_bind_group(
-        &device,
-        &bind_group_layout,
-        &gb_texture_view,
-        &sampler,
-        &gb_uniform,
-        "gb_bind_group",
-    );
 
-    // --- Debug panel resources ---
-    let debug_texture = create_panel_texture(&device, "debug_framebuffer");
+    // --- Debug panel resources (top-right, 160x144) ---
+    let debug_texture = create_panel_texture(&device, "debug_framebuffer", GB_W, GB_H);
     let debug_texture_view = debug_texture.create_view(None);
     let debug_uniform = create_identity_uniform(&device, "debug_uniform");
-    let debug_bind_group = create_panel_bind_group(
+
+    // --- Memory panel resources (bottom, 640x192 texture → 320x96 viewport) ---
+    let mem_texture = create_panel_texture(&device, "mem_framebuffer", MEM_TEX_W, MEM_TEX_H);
+    let mem_texture_view = mem_texture.create_view(None);
+    let mem_uniform = create_identity_uniform(&device, "mem_uniform");
+    let mem_bind_group = create_panel_bind_group(
         &device,
         &bind_group_layout,
-        &debug_texture_view,
-        &sampler,
-        &debug_uniform,
-        "debug_bind_group",
+        &mem_texture_view,
+        &linear_sampler,
+        &mem_uniform,
+        "mem_bind_group",
     );
+
+    // --- Trace panel resources (right, 320x480 texture → 160x240 viewport) ---
+    let trace_texture = create_panel_texture(&device, "trace_framebuffer", TRACE_TEX_W, TRACE_TEX_H);
+    let trace_texture_view = trace_texture.create_view(None);
+    let trace_uniform = create_identity_uniform(&device, "trace_uniform");
 
     // Shader + pipeline
     let shader_module = device.create_shader_module(&webgpu::GpuShaderModuleDescriptor {
@@ -551,6 +656,32 @@ fn run_emulator() {
             label: Some("gb_pipeline_layout".to_string()),
             bind_group_layouts: vec![Some(&bind_group_layout)],
         });
+
+    // Bind groups — all use the same layout (Filtering type accepts nearest samplers)
+    let gb_bind_group = create_panel_bind_group(
+        &device,
+        &bind_group_layout,
+        &gb_texture_view,
+        &nearest_sampler,
+        &gb_uniform,
+        "gb_bind_group",
+    );
+    let debug_bind_group = create_panel_bind_group(
+        &device,
+        &bind_group_layout,
+        &debug_texture_view,
+        &nearest_sampler,
+        &debug_uniform,
+        "debug_bind_group",
+    );
+    let trace_bind_group = create_panel_bind_group(
+        &device,
+        &bind_group_layout,
+        &trace_texture_view,
+        &linear_sampler,
+        &trace_uniform,
+        "trace_bind_group",
+    );
 
     let surface_format = gpu.get_preferred_canvas_format();
 
@@ -597,7 +728,7 @@ fn run_emulator() {
     wasi_println("nightboy: initialized (press ESC to toggle focus)");
 
     // Viewport state
-    let mut viewports = compute_dual_viewports(800, 600);
+    let mut viewports = compute_viewports(800, 600);
 
     // Double-click detection state
     let mut frame_count: u32 = 0;
@@ -630,7 +761,7 @@ fn run_emulator() {
         // Resize
         if events.contains(&1) {
             if let Some(e) = canvas.get_resize() {
-                viewports = compute_dual_viewports(e.width, e.height);
+                viewports = compute_viewports(e.width, e.height);
             }
         }
 
@@ -658,49 +789,85 @@ fn run_emulator() {
         }
         if events.contains(&5) {
             if let Some(e) = canvas.get_pointer_down() {
-                if let Some((side, _rel_x, rel_y)) =
-                    hit_test_panel(e.x, e.y, &viewports.0, &viewports.1)
+                if let Some((hit, rel_x, rel_y)) =
+                    hit_test_panel(e.x, e.y, &viewports)
                 {
-                    match side {
-                        PanelSide::Left => {
-                            if app.focus != AppFocus::Emulator {
-                                app.focus = AppFocus::Emulator;
-                                app.debug_panel.mark_dirty();
+                    let new_focus = match hit {
+                        PanelHit::GameScreen => AppFocus::Emulator,
+                        PanelHit::RomBrowser => AppFocus::RomBrowser,
+                        PanelHit::RamViewer => AppFocus::RamViewer,
+                        PanelHit::TraceViewer => AppFocus::TraceViewer,
+                    };
+
+                    if app.focus != new_focus {
+                        app.focus = new_focus;
+                        if matches!(
+                            new_focus,
+                            AppFocus::RomBrowser | AppFocus::RamViewer | AppFocus::TraceViewer
+                        ) {
+                            app.last_debug_focus = new_focus;
+                        }
+                        app.debug_panel.mark_dirty();
+                        app.memory_panel.mark_dirty();
+                        app.trace_panel.mark_dirty();
+                    }
+
+                    // Trace viewer tab click handling
+                    if hit == PanelHit::TraceViewer {
+                        let char_col = (rel_x * TRACE_CHAR_COLS as f64) as usize;
+                        let char_row = (rel_y * TRACE_CHAR_ROWS as f64) as usize;
+                        if char_row == 0 {
+                            if let Some(mode) = app.trace_panel.viewer.hit_test_tab(char_col) {
+                                app.trace_panel.viewer.set_filter(mode);
+                                app.trace_panel.mark_dirty();
                             }
                         }
-                        PanelSide::Right => {
-                            if app.focus != AppFocus::DebugPanel {
-                                app.focus = AppFocus::DebugPanel;
-                                app.debug_panel.mark_dirty();
-                            }
-                            // ROM browser click handling
-                            if app.active_tab == DebugTab::RomBrowser {
-                                let char_row =
-                                    (rel_y * CHAR_ROWS as f64) as usize;
-                                // Rows 2..=16 are entry rows
-                                if char_row >= 2 && char_row < 2 + 15 {
-                                    let entry_idx =
-                                        app.rom_browser.scroll_offset() + (char_row - 2);
-                                    if entry_idx < app.rom_browser.entry_count() {
-                                        // Double-click detection
-                                        let is_double_click = last_click_entry
-                                            == Some(entry_idx)
-                                            && frame_count.wrapping_sub(last_click_frame) < 30;
+                    }
 
-                                        if is_double_click {
-                                            app.rom_browser
-                                                .handle_input(BrowserAction::Open);
-                                            last_click_entry = None;
-                                        } else {
-                                            app.rom_browser.handle_input(
-                                                BrowserAction::Select(entry_idx),
-                                            );
-                                            last_click_entry = Some(entry_idx);
-                                        }
-                                        last_click_frame = frame_count;
-                                        app.debug_panel.mark_dirty();
-                                    }
+                    // RAM viewer tab click handling
+                    if hit == PanelHit::RamViewer {
+                        let char_col = (rel_x * MEM_CHAR_COLS as f64) as usize;
+                        let char_row = (rel_y * MEM_CHAR_ROWS as f64) as usize;
+                        if char_row == 0 {
+                            if let Some(idx) = app.memory_panel.viewer.hit_test_tab(char_col) {
+                                let bus = match &app.emulator {
+                                    EmulatorState::Running { cpu } => Some(&cpu.bus),
+                                    EmulatorState::NoRom => None,
+                                };
+                                app.memory_panel.viewer.handle_input(
+                                    ViewerAction::SelectRegion(idx),
+                                    bus,
+                                );
+                                app.memory_panel.mark_dirty();
+                            }
+                        }
+                    }
+
+                    // ROM browser click handling
+                    if hit == PanelHit::RomBrowser {
+                        let char_row = (rel_y * CHAR_ROWS as f64) as usize;
+                        // Rows 2..=16 are entry rows
+                        if char_row >= 2 && char_row < 2 + 15 {
+                            let entry_idx =
+                                app.rom_browser.scroll_offset() + (char_row - 2);
+                            if entry_idx < app.rom_browser.entry_count() {
+                                // Double-click detection
+                                let is_double_click = last_click_entry
+                                    == Some(entry_idx)
+                                    && frame_count.wrapping_sub(last_click_frame) < 30;
+
+                                if is_double_click {
+                                    app.rom_browser
+                                        .handle_input(BrowserAction::Open);
+                                    last_click_entry = None;
+                                } else {
+                                    app.rom_browser.handle_input(
+                                        BrowserAction::Select(entry_idx),
+                                    );
+                                    last_click_entry = Some(entry_idx);
                                 }
+                                last_click_frame = frame_count;
+                                app.debug_panel.mark_dirty();
                             }
                         }
                     }
@@ -722,6 +889,8 @@ fn run_emulator() {
             app.emulator = EmulatorState::Running { cpu };
             app.focus = AppFocus::Emulator;
             app.debug_panel.mark_dirty();
+            app.memory_panel.mark_dirty();
+            app.trace_panel.mark_dirty();
         }
 
         // Frame
@@ -752,16 +921,31 @@ fn run_emulator() {
                 EmulatorState::NoRom => no_rom_fb.clone(),
             };
 
+            // Auto-dirty: memory + trace panels refresh every frame while running
+            if matches!(app.emulator, EmulatorState::Running { .. }) {
+                app.memory_panel.mark_dirty();
+                app.trace_panel.mark_dirty();
+            }
+
             // Dim game screen when not focused
             if app.focus != AppFocus::Emulator {
                 dim_framebuffer(&mut gb_fb);
             }
 
-            // Render debug panel (dim when not focused)
-            let debug_fb =
-                app.debug_panel
-                    .render(app.focus, app.active_tab, &app.rom_browser);
-            let debug_fb = if app.focus != AppFocus::DebugPanel {
+            // Get bus/trace references for panels
+            let empty_log = trace_log::TraceLog::new();
+            let (bus_ref, trace_ref, total_cycles) = match &app.emulator {
+                EmulatorState::Running { cpu } => {
+                    (Some(&cpu.bus), &cpu.bus.trace_log, cpu.total_cycles)
+                }
+                EmulatorState::NoRom => {
+                    (None, &empty_log, 0)
+                }
+            };
+
+            // Render debug panel (ROM browser)
+            let debug_fb = app.debug_panel.render(app.focus, &app.rom_browser);
+            let debug_fb = if app.focus != AppFocus::RomBrowser {
                 let mut dimmed = debug_fb.to_vec();
                 dim_framebuffer(&mut dimmed);
                 dimmed
@@ -769,18 +953,41 @@ fn run_emulator() {
                 debug_fb.to_vec()
             };
 
-            // Upload and render both panels
-            upload_framebuffer(&device.queue(), &gb_texture, &gb_fb);
-            upload_framebuffer(&device.queue(), &debug_texture, &debug_fb);
+            // Render memory panel
+            let mem_fb = app.memory_panel.render(app.focus, bus_ref);
+            let mem_fb = if app.focus != AppFocus::RamViewer {
+                let mut dimmed = mem_fb.to_vec();
+                dim_framebuffer(&mut dimmed);
+                dimmed
+            } else {
+                mem_fb.to_vec()
+            };
 
-            render_frame_dual(
+            // Render trace panel
+            let trace_fb = app.trace_panel.render(app.focus, trace_ref, total_cycles);
+            let trace_fb = if app.focus != AppFocus::TraceViewer {
+                let mut dimmed = trace_fb.to_vec();
+                dim_framebuffer(&mut dimmed);
+                dimmed
+            } else {
+                trace_fb.to_vec()
+            };
+
+            // Upload and render all four panels
+            upload_framebuffer(&device.queue(), &gb_texture, &gb_fb, GB_W, GB_H);
+            upload_framebuffer(&device.queue(), &debug_texture, &debug_fb, GB_W, GB_H);
+            upload_framebuffer(&device.queue(), &mem_texture, &mem_fb, MEM_TEX_W, MEM_TEX_H);
+            upload_framebuffer(&device.queue(), &trace_texture, &trace_fb, TRACE_TEX_W, TRACE_TEX_H);
+
+            render_frame_quad(
                 &device,
                 &graphics_context,
                 &render_pipeline,
                 &gb_bind_group,
                 &debug_bind_group,
-                &viewports.0,
-                &viewports.1,
+                &mem_bind_group,
+                &trace_bind_group,
+                &viewports,
             );
         }
     }
@@ -791,22 +998,38 @@ fn run_emulator() {
 // ---------------------------------------------------------------------------
 
 fn handle_key_down(app: &mut AppState, key: surface::Key) {
-    // Escape toggles focus
+    // Escape toggles Emulator <-> last debug focus
     if key == surface::Key::Escape {
         app.focus = match app.focus {
-            AppFocus::Emulator => AppFocus::DebugPanel,
-            AppFocus::DebugPanel => AppFocus::Emulator,
+            AppFocus::Emulator => app.last_debug_focus,
+            _ => AppFocus::Emulator,
         };
         app.debug_panel.mark_dirty();
+        app.memory_panel.mark_dirty();
+        app.trace_panel.mark_dirty();
         return;
     }
 
-    // Tab cycles debug tabs (only one for now)
+    // Tab cycles between debug panels (only when focused on a debug panel)
     if key == surface::Key::Tab {
-        app.active_tab = match app.active_tab {
-            DebugTab::RomBrowser => DebugTab::RomBrowser, // only one tab
-        };
+        match app.focus {
+            AppFocus::RomBrowser => {
+                app.focus = AppFocus::RamViewer;
+                app.last_debug_focus = AppFocus::RamViewer;
+            }
+            AppFocus::RamViewer => {
+                app.focus = AppFocus::TraceViewer;
+                app.last_debug_focus = AppFocus::TraceViewer;
+            }
+            AppFocus::TraceViewer => {
+                app.focus = AppFocus::RomBrowser;
+                app.last_debug_focus = AppFocus::RomBrowser;
+            }
+            AppFocus::Emulator => {} // Tab does nothing while gaming
+        }
         app.debug_panel.mark_dirty();
+        app.memory_panel.mark_dirty();
+        app.trace_panel.mark_dirty();
         return;
     }
 
@@ -816,7 +1039,7 @@ fn handle_key_down(app: &mut AppState, key: surface::Key) {
                 handle_key(&mut cpu.bus.joypad, key, true);
             }
         }
-        AppFocus::DebugPanel => {
+        AppFocus::RomBrowser => {
             let action = match key {
                 surface::Key::ArrowUp => Some(BrowserAction::Up),
                 surface::Key::ArrowDown => Some(BrowserAction::Down),
@@ -827,6 +1050,41 @@ fn handle_key_down(app: &mut AppState, key: surface::Key) {
             if let Some(action) = action {
                 app.rom_browser.handle_input(action);
                 app.debug_panel.mark_dirty();
+            }
+        }
+        AppFocus::RamViewer => {
+            let bus = match &app.emulator {
+                EmulatorState::Running { cpu } => Some(&cpu.bus),
+                EmulatorState::NoRom => None,
+            };
+            let action = match key {
+                surface::Key::ArrowUp => Some(ViewerAction::ScrollUp),
+                surface::Key::ArrowDown => Some(ViewerAction::ScrollDown),
+                surface::Key::ArrowLeft => Some(ViewerAction::PrevRegion),
+                surface::Key::ArrowRight => Some(ViewerAction::NextRegion),
+                surface::Key::PageUp => Some(ViewerAction::PageUp),
+                surface::Key::PageDown => Some(ViewerAction::PageDown),
+                _ => None,
+            };
+            if let Some(action) = action {
+                app.memory_panel.viewer.handle_input(action, bus);
+                app.memory_panel.mark_dirty();
+            }
+        }
+        AppFocus::TraceViewer => {
+            use trace_viewer::ViewerAction as TraceAction;
+            let action = match key {
+                surface::Key::ArrowUp => Some(TraceAction::ScrollUp),
+                surface::Key::ArrowDown => Some(TraceAction::ScrollDown),
+                surface::Key::ArrowLeft => Some(TraceAction::PrevFilter),
+                surface::Key::ArrowRight => Some(TraceAction::NextFilter),
+                surface::Key::PageUp => Some(TraceAction::PageUp),
+                surface::Key::PageDown => Some(TraceAction::PageDown),
+                _ => None,
+            };
+            if let Some(action) = action {
+                app.trace_panel.viewer.handle_input(action);
+                app.trace_panel.mark_dirty();
             }
         }
     }

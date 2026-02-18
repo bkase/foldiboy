@@ -3,6 +3,62 @@ use ppu::Ppu;
 
 use crate::joypad::Joypad;
 use crate::timer::Timer;
+use crate::trace_log::{BusOp, TraceLog};
+
+/// Memory region identifiers, aligned with proof system TwistIds.
+/// Rom and Regs are defined for v2 trace alignment but not yet viewable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum MemoryRegion {
+    Wram, // TwistId(0) — C000-DFFF, 8192 bytes
+    Rom,  // TwistId(1) — 0000-7FFF (banked, read-only)
+    Regs, // TwistId(2) — CPU registers
+    Vram, // TwistId(3) — 8000-9FFF, 8192 bytes
+    Io,   // TwistId(4) — FF00-FF7F, 128 bytes
+    Hram, // TwistId(5) — FF80-FFFE, 127 bytes
+    Oam,  // TwistId(6) — FE00-FE9F, 160 bytes
+    Eram, // TwistId(7) — A000-BFFF (banked)
+}
+
+impl MemoryRegion {
+    /// Base address in the Game Boy address space.
+    pub fn base_addr(self) -> u16 {
+        match self {
+            MemoryRegion::Wram => 0xC000,
+            MemoryRegion::Rom => 0x0000,
+            MemoryRegion::Regs => 0x0000, // N/A for CPU registers
+            MemoryRegion::Vram => 0x8000,
+            MemoryRegion::Io => 0xFF00,
+            MemoryRegion::Hram => 0xFF80,
+            MemoryRegion::Oam => 0xFE00,
+            MemoryRegion::Eram => 0xA000,
+        }
+    }
+
+    /// Display name for the debug panel header.
+    pub fn label(self) -> &'static str {
+        match self {
+            MemoryRegion::Wram => "WRAM",
+            MemoryRegion::Rom => "ROM",
+            MemoryRegion::Regs => "REGS",
+            MemoryRegion::Vram => "VRAM",
+            MemoryRegion::Io => "I/O",
+            MemoryRegion::Hram => "HRAM",
+            MemoryRegion::Oam => "OAM",
+            MemoryRegion::Eram => "ERAM",
+        }
+    }
+}
+
+/// Viewable regions for the RAM viewer (excludes Rom and Regs).
+pub const VIEWABLE_REGIONS: [MemoryRegion; 6] = [
+    MemoryRegion::Wram,
+    MemoryRegion::Vram,
+    MemoryRegion::Hram,
+    MemoryRegion::Oam,
+    MemoryRegion::Io,
+    MemoryRegion::Eram,
+];
 
 /// MBC type detected from the cartridge header byte $0147.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -142,6 +198,9 @@ pub struct GameBoyBus {
 
     // OAM DMA
     pub dma_reg: u8, // $FF46: last value written
+
+    // Trace log for debug trace viewer
+    pub trace_log: TraceLog,
 }
 
 impl GameBoyBus {
@@ -224,6 +283,7 @@ impl GameBoyBus {
             serial_control: 0,
             serial_output: Vec::new(),
             dma_reg: 0,
+            trace_log: TraceLog::new(),
         }
     }
 
@@ -329,6 +389,67 @@ impl GameBoyBus {
         }
     }
 
+    /// Size of a memory region in bytes.
+    pub fn region_size(&self, region: MemoryRegion) -> usize {
+        match region {
+            MemoryRegion::Wram => 8192,
+            MemoryRegion::Rom => self.rom.len(),
+            MemoryRegion::Regs => 0,
+            MemoryRegion::Vram => 8192,
+            MemoryRegion::Io => 128,
+            MemoryRegion::Hram => 127,
+            MemoryRegion::Oam => 160,
+            MemoryRegion::Eram => self.eram.len(),
+        }
+    }
+
+    /// Read a byte from a memory region by offset (no side effects).
+    pub fn read_region(&self, region: MemoryRegion, offset: usize) -> u8 {
+        match region {
+            MemoryRegion::Wram => {
+                self.wram.get(offset).copied().unwrap_or(0xFF)
+            }
+            MemoryRegion::Vram => {
+                let addr = 0x8000u16.wrapping_add(offset as u16);
+                self.ppu.vram.read(addr)
+            }
+            MemoryRegion::Hram => {
+                self.hram.get(offset).copied().unwrap_or(0xFF)
+            }
+            MemoryRegion::Oam => {
+                let addr = 0xFE00u16.wrapping_add(offset as u16);
+                self.ppu.oam.read(addr)
+            }
+            MemoryRegion::Io => {
+                // Read I/O without side effects — return raw register values
+                let addr = 0xFF00u16.wrapping_add(offset as u16);
+                match addr {
+                    0xFF00 => self.joypad.read(),
+                    0xFF01 => self.serial_data,
+                    0xFF02 => self.serial_control | 0x7E,
+                    0xFF04..=0xFF07 => self.timer.read(addr),
+                    0xFF0F => self.if_reg | 0xE0,
+                    0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.read_register(addr),
+                    0xFF46 => self.dma_reg,
+                    0xFF40..=0xFF4B => self.ppu.read_register(addr),
+                    _ => 0xFF,
+                }
+            }
+            MemoryRegion::Eram => {
+                self.eram.get(offset).copied().unwrap_or(0xFF)
+            }
+            MemoryRegion::Rom => {
+                self.rom.get(offset).copied().unwrap_or(0xFF)
+            }
+            MemoryRegion::Regs => 0xFF,
+        }
+    }
+
+    /// Current external RAM bank number (for display).
+    pub fn eram_bank(&self) -> usize {
+        self.ram_bank()
+    }
+
     fn oam_dma(&mut self, source_high: u8) {
         let base = (source_high as u16) << 8;
         for i in 0..160u16 {
@@ -362,7 +483,7 @@ fn detect_mbc1_multicart(rom: &[u8]) -> bool {
 
 impl Bus for GameBoyBus {
     fn read(&mut self, addr: u16) -> u8 {
-        match addr {
+        let value = match addr {
             // ROM (banked)
             0x0000..=0x7FFF => self.read_rom(addr),
 
@@ -402,7 +523,9 @@ impl Bus for GameBoyBus {
 
             // Unmapped I/O
             _ => 0xFF,
-        }
+        };
+        self.trace_log.push_op(BusOp { addr, value, is_write: false });
+        value
     }
 
     fn write(&mut self, addr: u16, value: u8) {
@@ -531,5 +654,6 @@ impl Bus for GameBoyBus {
             // Unmapped I/O
             _ => {}
         }
+        self.trace_log.push_op(BusOp { addr, value, is_write: true });
     }
 }

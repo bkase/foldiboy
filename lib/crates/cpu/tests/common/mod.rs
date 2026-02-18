@@ -110,6 +110,7 @@ impl Bus for GameBoyTestBus {
             0xFF06 => self.tma,                        // TMA
             0xFF07 => self.tac | 0xF8,                   // TAC: bits 3-7 unused, always 1
             0xFF0F => self.inner.read(addr) | 0xE0,   // IF: upper 3 bits always read as 1
+            0xFF44 => (self.scanline_counter / 456) as u8, // LY: current scanline (0-153)
             0xFF10..=0xFF3F => self.apu.read_register(addr),
             _ => self.inner.read(addr),
         }

@@ -1,12 +1,12 @@
-// 8x8 bitmap font and text buffer for the debug panel.
+// 8x8 bitmap font and text grid for debug panels.
 
-/// Screen dimensions in characters.
+/// Top-panel dimensions in characters (160x144 pixels).
 pub const COLS: usize = 20;
 pub const ROWS: usize = 18;
 
-/// Screen dimensions in pixels.
-const PX_W: usize = COLS * 8; // 160
-const PX_H: usize = ROWS * 8; // 144
+/// Bottom-panel (memory viewer) dimensions in characters (640x192 pixels).
+pub const WIDE_COLS: usize = 80;
+pub const WIDE_ROWS: usize = 24;
 
 /// DMG colour shades for text rendering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,47 +46,50 @@ impl Default for Cell {
     }
 }
 
-/// 20x18 character grid rendered to a 160x144 RGBA8 buffer.
-pub struct TextBuffer {
-    cells: [[Cell; COLS]; ROWS],
+/// Generic character grid rendered to an RGBA8 buffer.
+/// Pixel dimensions are `C*8` x `R*8`.
+pub struct TextGrid<const C: usize, const R: usize> {
+    cells: [[Cell; C]; R],
 }
 
-impl TextBuffer {
+impl<const C: usize, const R: usize> TextGrid<C, R> {
     pub fn new() -> Self {
-        TextBuffer {
-            cells: [[Cell::default(); COLS]; ROWS],
+        TextGrid {
+            cells: [[Cell::default(); C]; R],
         }
     }
 
     pub fn clear(&mut self) {
-        self.cells = [[Cell::default(); COLS]; ROWS];
+        self.cells = [[Cell::default(); C]; R];
     }
 
     pub fn set_cell(&mut self, col: usize, row: usize, cell: Cell) {
-        if col < COLS && row < ROWS {
+        if col < C && row < R {
             self.cells[row][col] = cell;
         }
     }
 
     pub fn put_str(&mut self, col: usize, row: usize, text: &str, fg: TextColour, bg: TextColour) {
-        if row >= ROWS {
+        if row >= R {
             return;
         }
         for (i, byte) in text.bytes().enumerate() {
             let c = col + i;
-            if c >= COLS {
+            if c >= C {
                 break;
             }
             self.cells[row][c] = Cell { ch: byte, fg, bg };
         }
     }
 
-    /// Rasterize all cells to a 160x144 RGBA8 pixel buffer.
+    /// Rasterize all cells to a `(C*8) x (R*8)` RGBA8 pixel buffer.
     pub fn render_rgba8(&self) -> Vec<u8> {
-        let mut pixels = vec![0u8; PX_W * PX_H * 4];
+        let px_w = C * 8;
+        let px_h = R * 8;
+        let mut pixels = vec![0u8; px_w * px_h * 4];
 
-        for row in 0..ROWS {
-            for col in 0..COLS {
+        for row in 0..R {
+            for col in 0..C {
                 let cell = &self.cells[row][col];
                 let glyph = glyph_for(cell.ch);
                 let fg = cell.fg.to_rgba();
@@ -99,7 +102,7 @@ impl TextBuffer {
                         let px = col * 8 + gx;
                         let on = bits & (1 << gx) != 0;
                         let colour = if on { &fg } else { &bg };
-                        let offset = (py * PX_W + px) * 4;
+                        let offset = (py * px_w + px) * 4;
                         pixels[offset..offset + 4].copy_from_slice(colour);
                     }
                 }
@@ -109,6 +112,12 @@ impl TextBuffer {
         pixels
     }
 }
+
+/// 20x18 character grid (160x144 pixels) — used by top panels.
+pub type TextBuffer = TextGrid<COLS, ROWS>;
+
+/// 80x24 character grid (640x192 pixels) — used by bottom memory panel.
+pub type WideTextBuffer = TextGrid<WIDE_COLS, WIDE_ROWS>;
 
 /// Look up the 8x8 glyph bitmap for an ASCII byte.
 fn glyph_for(ch: u8) -> &'static [u8; 8] {
@@ -408,5 +417,23 @@ mod tests {
         let pixels = buf.render_rgba8();
         let white = TextColour::White.to_rgba();
         assert_eq!(&pixels[0..4], &white);
+    }
+
+    #[test]
+    fn wide_text_buffer_correct_size() {
+        let buf = WideTextBuffer::new();
+        let pixels = buf.render_rgba8();
+        assert_eq!(pixels.len(), 640 * 192 * 4);
+    }
+
+    #[test]
+    fn wide_put_str_truncates_at_80() {
+        let mut buf = WideTextBuffer::new();
+        let long = "A".repeat(100);
+        buf.put_str(0, 0, &long, TextColour::DarkGrey, TextColour::White);
+        // Only first 80 chars should be placed
+        for col in 0..80 {
+            assert_eq!(buf.cells[0][col].ch, b'A');
+        }
     }
 }
