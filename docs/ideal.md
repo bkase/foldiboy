@@ -1,6 +1,6 @@
 # The Ideal Game Boy Emulator
 
-The target architecture for Nightboy — a Game Boy emulator designed for
+The target architecture for Foldiboy — a Game Boy emulator designed for
 zero-knowledge proof generation in the Nightstream zkVM.
 
 > **Audience**: Developers with knowledge of VMs, ZK and Gameboy internals
@@ -30,16 +30,16 @@ Ordered by priority. When they conflict, higher-ranked principles win.
    input. See [`provability.md` "Decision Criteria"](provability.md#decision-criteria)
    for the full rationale.
 
-## 2. Nightboy as a guest running inside a host
+## 2. Foldiboy as a guest running inside a host
 
-The Nightboy emulator is built entirely around the concept of [wasm components](https://component-model.bytecodealliance.org/) (different from wasm modules). 
+The Foldiboy emulator is built entirely around the concept of [wasm components](https://component-model.bytecodealliance.org/) (different from wasm modules). 
 
-Notably, this means that Nightboy runs as a "guest" embedded inside a "host" (a browser, the desktop, etc.), and the boundary between the two is defined by a [WIT](https://component-model.bytecodealliance.org/design/wit.html) interface.
+Notably, this means that Foldiboy runs as a "guest" embedded inside a "host" (a browser, the desktop, etc.), and the boundary between the two is defined by a [WIT](https://component-model.bytecodealliance.org/design/wit.html) interface.
 
 This means that:
-1. Nightboy does not render its own graphics. Rather, it requests the host to make [WebGPU](https://www.w3.org/TR/webgpu/) calls on its behalf (via [wasi-gfx])
-1. Nightboy does not poll for user inputs directly. Rather, it asks the host for any user inputs via the [wasi-gfx] [surface api](https://github.com/WebAssembly/wasi-gfx/blob/main/surface/surface.wit)
-1. Nightboy does not play its own sound. Rather, it requests the host to make [Web Audio API] calls on its behalf.
+1. Foldiboy does not render its own graphics. Rather, it requests the host to make [WebGPU](https://www.w3.org/TR/webgpu/) calls on its behalf (via [wasi-gfx])
+1. Foldiboy does not poll for user inputs directly. Rather, it asks the host for any user inputs via the [wasi-gfx] [surface api](https://github.com/WebAssembly/wasi-gfx/blob/main/surface/surface.wit)
+1. Foldiboy does not play its own sound. Rather, it requests the host to make [Web Audio API] calls on its behalf.
 
 ## 3. Scanning the ROM
 
@@ -51,7 +51,7 @@ While both the prover and the verifier have to run this scan step ahead of time 
 
 ## 3. Trace generation
 
-At the core of Nightboy is the need to generate traces of the execution in a format optimal for zkVM execution
+At the core of Foldiboy is the need to generate traces of the execution in a format optimal for zkVM execution
 
 Notably, the trace system is made up of [two tapes](https://en.wikipedia.org/wiki/Multitape_Turing_machine):
 
@@ -63,7 +63,7 @@ Notably, the trace system is made up of [two tapes](https://en.wikipedia.org/wik
 <!-- TODO: if needed, to lower tape size during debugging, we can have a "passthrough" mode where deterministic witnesses are recalculated at runtime by the emulator instead of coming from a tape -->
 
 
-To achieve this, Nightboy supports the following retention modes for the traces:
+To achieve this, Foldiboy supports the following retention modes for the traces:
 
 1. **No retention**: In this mode, traces are not persisted by the Gameboy beyond their internal use
 2. **Stream mode** (online provide): In this mode, traces are backed up in a cyclic buffer of fixed-size arrays.

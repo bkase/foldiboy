@@ -1,6 +1,6 @@
 # Provability Considerations
 
-Nightboy is designed as a ZK-optimized Gameboy emulator.
+Foldiboy is designed as a ZK-optimized Gameboy emulator.
 Notably, we assume that this zkVM is:
 - Folding-based
 - Lookup-based
@@ -922,7 +922,7 @@ This decision affects constraints.md §2.3.5 and all opcodes that touch SP arith
 ### Memory-mapped I/O
 - Using `LD` to write to specific addresses can trigger specific behavior (ex: writing to `$FF46` triggers OAM DMA, writing to `$FF04` resets DIV). 
 - Games can depend on reading these values (ex: reading from scx/scy to know what is in the screen)
-- Any `LD` that reads from `$FF00` (`JOYP`) needs to somehow interact with the witness tape as well (as all user inputs need to appear in the witness tape). The lower 4 bits of JOYP state can change at any time, so a read from it needs to be modeled as adding the value to the witness. The 5th bit only should be a Twist value (which means writes to this memory do need to be tracked).
+- Any `LD` that reads from `$FF00` (`JOYP`) needs to somehow interact with the witness tape as well (as all user inputs need to appear in the witness tape). The lower 4 bits of JOYP state can change at any time, so a read from it needs to be modeled as adding the value to the witness. Only the 5th-6th bits should be a Twist value (which means writes to this memory do need to be tracked).
     - this is also true for SB,SC,RTC, but we explicitly do not prove these.
 
 How do we model these in the zk-cycle? The constraint needs to detect the target address and apply side-effect rules.

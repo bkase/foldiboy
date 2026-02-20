@@ -1,4 +1,4 @@
-//! WASM Component entry point for Nightboy.
+//! WASM Component entry point for Foldiboy.
 //!
 //! This crate is the `cdylib` that gets compiled to `wasm32-wasip2` and wrapped
 //! into a WASM Component. It wires together the CPU, PPU, APU, timer, joypad,
@@ -41,20 +41,20 @@ mod trace_viewer;
 
 wit_bindgen::generate!({
     path: "../../wit",
-    world: "nightstream:nightboy/app",
+    world: "nightstream:foldiboy/app",
     generate_all,
 });
 
-struct Nightboy;
+struct Foldiboy;
 
-impl exports::wasi::cli::run::Guest for Nightboy {
+impl exports::wasi::cli::run::Guest for Foldiboy {
     fn run() -> Result<(), ()> {
         run_emulator();
         Ok(())
     }
 }
 
-export!(Nightboy);
+export!(Foldiboy);
 
 use nightstream::audio::audio as ns_audio;
 use wasi::{graphics_context::graphics_context, surface::surface, webgpu::webgpu};
@@ -725,7 +725,7 @@ fn run_emulator() {
     // --- Application state ---
     let mut app = AppState::new();
     let no_rom_fb = render_no_rom_placeholder();
-    wasi_println("nightboy: initialized (press ESC to toggle focus)");
+    wasi_println("foldiboy: initialized (press ESC to toggle focus)");
 
     // Viewport state
     let mut viewports = compute_viewports(800, 600);
@@ -881,7 +881,7 @@ fn run_emulator() {
         // Check if a ROM was selected
         if let Some(rom_data) = app.rom_browser.selected_rom.take() {
             wasi_println(&format!(
-                "nightboy: ROM loaded ({} bytes)",
+                "foldiboy: ROM loaded ({} bytes)",
                 rom_data.len()
             ));
             let bus = GameBoyBus::new(rom_data);

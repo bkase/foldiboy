@@ -1,19 +1,19 @@
-# Nightboy
+# Foldiboy
 
 A Game Boy (DMG) emulator built as a [WASM Component](https://component-model.bytecodealliance.org/), designed for the [Nightstream](https://github.com/LFDT-Nightstream/Nightstream) zkVM. The emulator runs as a guest module inside a wasmtime host, communicating through WIT interfaces for graphics, audio, input, and filesystem access.
 
 ## Why another Gameboy emulator?
 
 There are multiple requirements that have driven us to create a new Gameboy emulator:
-1. **Efficient provability**: Nightboy is fully ZK-provable. Doing this efficiently requires:
+1. **Efficient provability**: Foldiboy is fully ZK-provable. Doing this efficiently requires:
     1. **Filtered traces**: An easy way to get a trace of all read, write, opcodes that need to be proven by the proof system (most emulators have no way to get traces, let alone stream them in over time)
     2. **Fine-tuned provability**: Filter out from traces any opcodes that do not need to be proven (ex: some UI and audio state). Note that these can be a bit subtle, as it requires us to error/warn on any game that uses behavior that cannot be proven (ex: the game logic somehow reads from the graphic state - but this is extremely rare in practice)
     3. **External inputs into proving system**: Manage external input (ex: user inputs) as witnesses injected into the game console (as opposed to them being entirely internal to the emulator)
     4. **Direct opcode proving**: most attempts to prove other systems work by taking software, compiling to to a known instruction set (riscv, wasm), and then proving this. Since this means that running a single sm83 opcode means proving 10+ riscv opcodes due to compilation overhead, this leads to massive proof overhead. 
     5. **Disable dangerous features**: some features in the Gameboy like eram (data loaded from save files) cannot be supported, as it would allow injecting unproven state into the system. We have to disable these features in a logical way on a case-by-case basis to ensure there are no attack vectors.
-2. **Containerization**: Nightboy needs to be able to run even on sensitive devices (and therefore cannot trust installing software). To achieve this, we use sandboxing through Wasm of all components. Notably, we do sandboxing through Wasm Components (and not Wasm modules like some other emulators that support this) in order to easily get sandboxing even on the desktop, as well as leverage standards like wasi-gfx for webgpu-rendered UIs (which can be sandboxed)
+2. **Containerization**: Foldiboy needs to be able to run even on sensitive devices (and therefore cannot trust installing software). To achieve this, we use sandboxing through Wasm of all components. Notably, we do sandboxing through Wasm Components (and not Wasm modules like some other emulators that support this) in order to easily get sandboxing even on the desktop, as well as leverage standards like wasi-gfx for webgpu-rendered UIs (which can be sandboxed)
 
-Note that, despite these many ZK optimizations, Nightboy is not actually hard-coded to any proof system.
+Note that, despite these many ZK optimizations, Foldiboy is not actually hard-coded to any proof system.
 
 You can learn more about subtle points in relation to which component is proven and how in the following folders:
 - human-written managed documentation [here](./docs)
@@ -45,7 +45,7 @@ The guest produces a 160x144 RGBA8 framebuffer and interleaved i16 stereo audio 
 ## Repository Layout
 
 ```
-nightboy/
+foldiboy/
 ├── lib/                        Guest WASM component (Rust workspace)
 │   ├── crates/
 │   │   ├── cpu/                SM83 CPU: decode, execute, ALU, registers
@@ -95,7 +95,7 @@ nightboy/
 │   │           ├── ram_viewer.rs   RAM viewer: hex dump, tab bar, region switching
 │   │           └── font.rs         8x8 bitmap font, TextGrid<C,R> generic
 │   ├── wit/                    WIT interface definitions
-│   │   ├── gameboy.wit             nightstream:nightboy/app world
+│   │   ├── gameboy.wit             nightstream:foldiboy/app world
 │   │   └── deps/
 │   │       └── nightstream-audio/
 │   │           └── audio.wit       nightstream:audio@0.0.1 (push-based audio)
@@ -309,7 +309,7 @@ See `host/desktop/src/audio.rs` for a reference implementation using cpal + ring
 
 ## Design Decisions (ZK Context)
 
-Nightboy is built to be proven under any zkVM that supports lookups and folding.
+Foldiboy is built to be proven under any zkVM that supports lookups and folding.
 
 We have [provability](./docs/provability.md) docs to keep track of:
 1. Exactly what is provable
@@ -328,4 +328,4 @@ These trade-offs cause a small number of Mooneye/Blargg tests to fail by design 
 
 ## zk proving via Nightstream Integration
 
-Nightboy is optimized to be integrated with [Nightstream](https://github.com/LFDT-Nightstream/Nightstream), but avoids direct tight coupling (does not depend on any Nightstream-specific crates).
+Foldiboy is optimized to be integrated with [Nightstream](https://github.com/LFDT-Nightstream/Nightstream), but avoids direct tight coupling (does not depend on any Nightstream-specific crates).

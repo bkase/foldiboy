@@ -642,7 +642,7 @@ also be proven. See [§5.2](#52-mbc-bank-registers) for MBC_ID details.
 
 Writing to $FF46 triggers a 160-byte copy from a source region to OAM
 ($FE00-$FE9F). The source depends on the high byte written. On real hardware
-this takes 160 M-cycles; in nightboy it's instantaneous.
+this takes 160 M-cycles; in foldiboy it's instantaneous.
 
 **Key constraint**: The CCS has a fixed number of Twist lanes per step row
 (~11 max). A single step cannot emit 320 Twist events (160 reads + 160
@@ -1093,12 +1093,12 @@ the emulator) to validate external data:
 4. The proof system writes the verified received byte into the game's SB
    register and fires the serial interrupt (IF bit 3)
 
-This is a proof-system-level construct, not an emulator-level one. Nightboy
+This is a proof-system-level construct, not an emulator-level one. Foldiboy
 does not manage or validate external proofs — it only produces execution
 traces. The recursive composition happens in Nightstream.
 
-**Why this is not hardcoded into Nightboy**: The emulator should not be
-coupled to a specific proof system's recursive SNARK implementation. Nightboy
+**Why this is not hardcoded into Foldiboy**: The emulator should not be
+coupled to a specific proof system's recursive SNARK implementation. Foldiboy
 produces a single-player execution trace. Multi-player proof composition is
 handled entirely by Nightstream (or whatever proof system consumes the trace).
 

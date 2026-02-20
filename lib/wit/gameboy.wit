@@ -1,4 +1,4 @@
-package nightstream:nightboy;
+package nightstream:foldiboy;
 
 world app {
     import wasi:webgpu/webgpu@0.0.1;

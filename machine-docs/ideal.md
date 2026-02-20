@@ -1,9 +1,9 @@
 # The Ideal Game Boy Emulator
 
-The target architecture for Nightboy — a Game Boy emulator designed for
+The target architecture for Foldiboy — a Game Boy emulator designed for
 zero-knowledge proof generation in the Nightstream zkVM.
 
-> **Audience**: Developers working on Nightboy or the Nightstream Game Boy
+> **Audience**: Developers working on Foldiboy or the Nightstream Game Boy
 > integration. Assumes familiarity with the Twist & Shout proof primitives.
 >
 > **Purpose**: This document describes the architectural ideal we are building
@@ -612,7 +612,7 @@ replaces the PPU output entirely.
 ## 7. Integration Requirements
 
 This section describes what the integration layer (the bridge between
-Nightboy and Nightstream) will need from the emulator. The emulator itself
+Foldiboy and Nightstream) will need from the emulator. The emulator itself
 does not implement any of this — it just needs to expose the right
 architectural properties for the integration layer to work.
 

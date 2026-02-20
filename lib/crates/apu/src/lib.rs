@@ -19,7 +19,7 @@
 //!
 //! Audio is NOT proven. APU registers are pure I/O -- they do not affect CPU
 //! trace correctness. In proving mode, the bus fallthrough ($FF10-$FF3F → 0xFF)
-//! is sufficient. The APU exists solely for Nightboy's playback experience.
+//! is sufficient. The APU exists solely for Foldiboy's playback experience.
 
 pub mod registers;
 pub mod pulse;

@@ -128,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
     let mut store = Store::new(&engine, host_state);
 
     let component =
-        Component::from_file(&engine, "../../lib/target/nightboy-lib.wasm").context("Component file not found")?;
+        Component::from_file(&engine, "../../lib/target/foldiboy-lib.wasm").context("Component file not found")?;
 
     let command =
         wasmtime_wasi::p2::bindings::Command::instantiate_async(&mut store, &component, &linker)

@@ -701,7 +701,7 @@ fn cb_opcode_name(op: u8) -> &'static str {
 
 #[test]
 fn opcode_profile_pokemon_red() {
-    let rom_path = "../../../../nightboy/roms/tetris.gb";
+    let rom_path = "../../../../foldiboy/roms/tetris.gb";
     let rom_data = match std::fs::read(rom_path) {
         Ok(d) => d,
         Err(e) => {

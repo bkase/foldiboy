@@ -1,4 +1,4 @@
-# nightboy — Progress Tracker
+# foldiboy — Progress Tracker
 
 ## Completed
 
@@ -49,9 +49,9 @@ Code lives in `nightstream/crates/neo-memory/src/sm83/`. 51 tests pass across al
 #### Phase 1: Shout Lookup Tables (17 tests)
 
 - [x] `GbOpcode` enum — 34 variants (carry-split ADC/SBC/RL/RR, 8 BIT tests, 4 DAA tables)
-- [x] `GbInstruction` sub-enum hierarchy mirroring nightboy (Load, U8Arith, U16Arith, BitShift, Jump, Stack, Flag, InterruptCtl, Misc)
+- [x] `GbInstruction` sub-enum hierarchy mirroring foldiboy (Load, U8Arith, U16Arith, BitShift, Jump, Stack, Flag, InterruptCtl, Misc)
 - [x] `gb_interleave` / `gb_uninterleave` — 8-bit specialization packing two operands into u16 key
-- [x] `compute_op()` — pure ALU adapted from nightboy, returns packed u16 `(flags << 8) | result`
+- [x] `compute_op()` — pure ALU adapted from foldiboy, returns packed u16 `(flags << 8) | result`
 - [x] `GbShoutTables` implementing `Shout<u16>` — 34 ShoutIds mapped to ALU operations
 - [x] Exhaustive cross-validation: all 65,536 input pairs verified for every opcode
 
@@ -59,13 +59,13 @@ Code lives in `nightstream/crates/neo-memory/src/sm83/`. 51 tests pass across al
 
 - [x] `Sm83Cpu` implementing `VmCpu<u16, u16>` — full 512-opcode dispatch
 - [x] `Sm83Memory` implementing `Twist<u16, u16>` — sparse HashMap-based, F register masked to 0xF0
-- [x] `decode_at()` — byte-buffer decoder adapted from nightboy (3-byte fixed buffer)
+- [x] `decode_at()` — byte-buffer decoder adapted from foldiboy (3-byte fixed buffer)
 - [x] Regfile-as-Twist model: `PROG_ID=TwistId(0)`, `REG_ID=TwistId(1)`, `RAM_ID=TwistId(2)`
 - [x] Register addresses: A=0, F=1, B=2, C=3, D=4, E=5, H=6, L=7, SP_lo=8, SP_hi=9
 - [x] Variable-length fetch using `load_if_lane()` for conditional PROG reads (1–3 bytes)
 - [x] 16-bit arithmetic (ADD HL, INC/DEC r16, ADD SP e8) computed in-CPU without Shout
 - [x] Lane-based register access: lane 0 for primary src/dst, lane 1 for secondary
-- [x] Oracle cross-validation against nightboy for representative programs
+- [x] Oracle cross-validation against foldiboy for representative programs
 
 #### Phase 3: ExecTable Pipeline (16 tests)
 
