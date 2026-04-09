@@ -197,9 +197,49 @@ impl AsModule for Sm83Proofs {
         out.push_str("  unfold daa_11_mle_bv spec_daa_bv\n");
         out.push_str("  bv_decide\n\n");
 
-        // Placeholders for future phases
-        out.push_str("-- Phase 2C: AND/XOR/OR (16-var, closed-form) — TODO: solveMLE\n");
-        out.push_str("-- Phase 2D: ADD/SUB (16-var, ripple-carry) — TODO: bv_decide\n");
+        // Phase 2C+2D: Binary tables (16-var) via bv_decide
+        out.push_str("-- ============================================================\n");
+        out.push_str("-- Phase 2C: AND/XOR/OR (16-var, closed-form) — bv_decide\n");
+        out.push_str("-- Phase 2D: ADD/SUB (16-var, ripple-carry) — bv_decide\n");
+        out.push_str("-- ============================================================\n\n");
+
+        // Generate BitVec MLE evaluators for binary tables.
+        // At Boolean points, the field MLE evaluates identically to the BitVec operation:
+        //   AND MLE: Σ 2^i * x[i]*x[i+8]  =  a &&& b
+        //   XOR MLE: Σ 2^i * (x[i]+x[i+8]-2*x[i]*x[i+8])  =  a ^^^ b
+        //   OR MLE:  Σ 2^i * (x[i]+x[i+8]-x[i]*x[i+8])  =  a ||| b
+        //   ADD MLE: ripple-carry adder  =  a + b
+        //   SUB MLE: two's complement subtractor  =  a - b
+        for (name, bv_op) in [
+            ("and_8", "a &&& b"),
+            ("xor_8", "a ^^^ b"),
+            ("or_8", "a ||| b"),
+            ("add_8", "a + b"),
+            ("sub_8", "a - b"),
+        ] {
+            out.push_str(&format!(
+                "def {name}_mle_bv (x : BitVec 16) : BitVec 8 :=\n  \
+                 let a : BitVec 8 := x.extractLsb' 0 8\n  \
+                 let b : BitVec 8 := x.extractLsb' 8 8\n  \
+                 {bv_op}\n\n"
+            ));
+        }
+
+        for (name, spec_name) in [
+            ("and_8", "spec_and_bv"),
+            ("xor_8", "spec_xor_bv"),
+            ("or_8", "spec_or_bv"),
+            ("add_8", "spec_add_bv"),
+            ("sub_8", "spec_sub_bv"),
+        ] {
+            out.push_str(&format!(
+                "theorem {name}_correct (x : BitVec 16) :\n    \
+                 {name}_mle_bv x = {spec_name} x := by\n  \
+                 unfold {name}_mle_bv {spec_name} spec_{}\n  \
+                 bv_decide\n\n",
+                name.strip_suffix("_8").unwrap()
+            ));
+        }
 
         Ok(Module {
             name: "Proofs".into(),
@@ -238,13 +278,13 @@ mod tests {
     }
 
     #[test]
-    fn proof_count_is_34() {
+    fn proof_count_is_39() {
         let proofs = Sm83Proofs::extract();
         let module = proofs.as_module().unwrap();
         let contents = String::from_utf8(module.contents).unwrap();
         let count = contents.matches("\ntheorem ").count();
-        // 33 unary (8-var) + 1 DAA (11-var) = 34
-        assert_eq!(count, 34, "expected 34 theorems (33 unary + 1 DAA)");
+        // 33 unary (8-var) + 1 DAA (11-var) + 5 binary (16-var) = 39
+        assert_eq!(count, 39, "expected 39 theorems (33 + 1 + 5)");
     }
 
     #[test]

@@ -177,6 +177,20 @@ impl AsModule for Sm83Spec {
         ));
         out.push('\n');
 
+        // Pure BitVec packed specs for binary tables (for bv_decide proofs)
+        out.push_str("-- Packed BitVec specs for binary tables (16-bit input = a[0..7] ++ b[0..7])\n");
+        for (name, op) in [
+            ("add", "spec_add"),
+            ("sub", "spec_sub"),
+            ("and", "spec_and"),
+            ("xor", "spec_xor"),
+            ("or", "spec_or"),
+        ] {
+            out.push_str(&format!(
+                "def spec_{name}_bv (x : BitVec 16) : BitVec 8 :=\n  {op} (x.extractLsb' 0 8) (x.extractLsb' 8 8)\n\n"
+            ));
+        }
+
         Ok(Module {
             name: "Spec".into(),
             imports: vec![],
