@@ -47,6 +47,89 @@ impl Sm83Proofs {
     }
 }
 
+/// Generate the DAA MLE polynomial as a BitVec 16 evaluator.
+/// This mirrors the field version in mle.rs::daa_lean() but uses BitVec 16 arithmetic
+/// (wide enough for intermediates, wrapping subtraction handles negative values correctly).
+fn daa_mle_bv_lean() -> String {
+    let mut out = String::new();
+    out.push_str("-- DAA MLE polynomial evaluated at Boolean points via BitVec 16 arithmetic\n");
+    out.push_str("def daa_11_mle_bv (x : BitVec 11) : BitVec 8 :=\n");
+
+    // Extract bits as BitVec 16
+    for i in 0..8 {
+        out.push_str(&format!(
+            "  let a{i} : BitVec 16 := if x.getLsbD {i} then 1 else 0\n"
+        ));
+    }
+    out.push_str("  let N : BitVec 16 := if x.getLsbD 8 then 1 else 0\n");
+    out.push_str("  let H : BitVec 16 := if x.getLsbD 9 then 1 else 0\n");
+    out.push_str("  let C : BitVec 16 := if x.getLsbD 10 then 1 else 0\n");
+
+    // Same polynomial body as the field version
+    out.push_str("  let notN := 1 - N\n");
+    out.push_str("  let lo_gt9 := a3 * (a2 + a1 - a2 * a1)\n");
+    out.push_str("  let adj_lo_cond := notN * lo_gt9\n");
+    out.push_str("  let adj_lo := adj_lo_cond + H - adj_lo_cond * H\n");
+    out.push_str("  let hi_ge10 := a7 * (a6 + a5 - a6 * a5)\n");
+    out.push_str("  let hi_eq9 := a4 * (1 - a5) * (1 - a6) * a7\n");
+    out.push_str("  let a_gt99 := hi_ge10 + hi_eq9 * lo_gt9 - hi_ge10 * hi_eq9 * lo_gt9\n");
+    out.push_str("  let adj_hi_cond := notN * a_gt99\n");
+    out.push_str("  let adj_hi := adj_hi_cond + C - adj_hi_cond * C\n");
+
+    // Offset bits
+    for i in 0..8 {
+        match i {
+            1 | 2 => out.push_str(&format!("  let off{i} := adj_lo\n")),
+            5 | 6 => out.push_str(&format!("  let off{i} := adj_hi\n")),
+            _ => out.push_str(&format!("  let off{i} : BitVec 16 := 0\n")),
+        }
+    }
+
+    // XOR with N: b_i = off_i + N - 2 * off_i * N
+    for i in 0..8 {
+        out.push_str(&format!(
+            "  let b{i} := off{i} + N - 2 * off{i} * N\n"
+        ));
+    }
+
+    // Ripple-carry
+    out.push_str("  let cin := N\n");
+    out.push_str("  let rc_c0 := cin\n");
+    for i in 0..8 {
+        let c = format!("rc_c{i}");
+        out.push_str(&format!(
+            "  let rc_ab{i} := a{i} * b{i}; let rc_ac{i} := a{i} * {c}; let rc_bc{i} := b{i} * {c}; let rc_abc{i} := rc_ab{i} * {c}\n"
+        ));
+        out.push_str(&format!(
+            "  let rc_s{i} := a{i} + b{i} + {c} - 2 * (rc_ab{i} + rc_ac{i} + rc_bc{i}) + 4 * rc_abc{i}\n"
+        ));
+        if i < 7 {
+            out.push_str(&format!(
+                "  let rc_c{} := rc_ab{i} + rc_ac{i} + rc_bc{i} - 2 * rc_abc{i}\n",
+                i + 1
+            ));
+        }
+    }
+
+    // Final sum, truncated to 8 bits
+    let terms: Vec<String> = (0..8)
+        .map(|i| {
+            if i == 0 {
+                format!("rc_s{i}")
+            } else {
+                format!("{} * rc_s{i}", 1u32 << i)
+            }
+        })
+        .collect();
+    out.push_str(&format!(
+        "  let result := {}\n",
+        terms.join(" + ")
+    ));
+    out.push_str("  result.extractLsb' 0 8\n\n");
+
+    out
+}
+
 /// Generate a proof for a single 8-variable table.
 fn proof_for_unary_table(table: Sm83Table) -> String {
     assert_eq!(table.kind(), TableKind::Unary);
@@ -104,8 +187,17 @@ impl AsModule for Sm83Proofs {
             out.push('\n');
         }
 
+        // Phase 2B: DAA (11-var) via bv_decide
+        out.push_str("-- ============================================================\n");
+        out.push_str("-- Phase 2B: DAA (11-var) — bv_decide\n");
+        out.push_str("-- ============================================================\n\n");
+        out.push_str(&daa_mle_bv_lean());
+        out.push_str("theorem daa_11_correct (x : BitVec 11) :\n");
+        out.push_str("    daa_11_mle_bv x = spec_daa_bv x := by\n");
+        out.push_str("  unfold daa_11_mle_bv spec_daa_bv\n");
+        out.push_str("  bv_decide\n\n");
+
         // Placeholders for future phases
-        out.push_str("-- Phase 2B: DAA (11-var) — TODO: bv_decide\n");
         out.push_str("-- Phase 2C: AND/XOR/OR (16-var, closed-form) — TODO: solveMLE\n");
         out.push_str("-- Phase 2D: ADD/SUB (16-var, ripple-carry) — TODO: bv_decide\n");
 
@@ -146,12 +238,13 @@ mod tests {
     }
 
     #[test]
-    fn proof_count_is_33() {
+    fn proof_count_is_34() {
         let proofs = Sm83Proofs::extract();
         let module = proofs.as_module().unwrap();
         let contents = String::from_utf8(module.contents).unwrap();
         let count = contents.matches("\ntheorem ").count();
-        assert_eq!(count, 33, "expected 33 theorems for 8-var tables");
+        // 33 unary (8-var) + 1 DAA (11-var) = 34
+        assert_eq!(count, 34, "expected 34 theorems (33 unary + 1 DAA)");
     }
 
     #[test]

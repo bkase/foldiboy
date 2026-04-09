@@ -158,6 +158,25 @@ impl AsModule for Sm83Spec {
             out.push('\n');
         }
 
+        // Pure BitVec spec for DAA (for bv_decide proofs — no decide on Prop)
+        out.push_str("-- Pure BitVec DAA spec for bv_decide proofs\n");
+        out.push_str(concat!(
+            "def spec_daa_bv (x : BitVec 11) : BitVec 8 :=\n",
+            "  let a : BitVec 8 := x.extractLsb' 0 8\n",
+            "  let n : Bool := x.getLsbD 8\n",
+            "  let h : Bool := x.getLsbD 9\n",
+            "  let c : Bool := x.getLsbD 10\n",
+            "  let lo : BitVec 8 := a &&& 0x0F#8\n",
+            "  let lo_gt9 : Bool := !n && (0x09#8).ult lo\n",
+            "  let adj_lo : Bool := lo_gt9 || h\n",
+            "  let a_gt99 : Bool := !n && (0x99#8).ult a\n",
+            "  let adj_hi : Bool := a_gt99 || c\n",
+            "  let offset : BitVec 8 :=\n",
+            "    (if adj_lo then 0x06#8 else 0x00#8) ||| (if adj_hi then 0x60#8 else 0x00#8)\n",
+            "  if n then a - offset else a + offset\n",
+        ));
+        out.push('\n');
+
         Ok(Module {
             name: "Spec".into(),
             imports: vec![],
