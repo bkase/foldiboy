@@ -241,6 +241,31 @@ impl AsModule for Sm83Proofs {
             ));
         }
 
+        // Bridge proofs: connect the actual field MLEs from LookupTables.lean
+        // to the BitVec evaluators, closing the field ↔ BitVec gap.
+        out.push_str("-- ============================================================\n");
+        out.push_str("-- Bridge: field MLE = BitVec evaluator at Boolean points\n");
+        out.push_str("-- These connect the actual [Field f] polynomials to the BitVec\n");
+        out.push_str("-- evaluators proved correct above.\n");
+        out.push_str("-- ============================================================\n\n");
+
+        // DAA bridge: Fin 2048 is small enough for native_decide
+        out.push_str("theorem daa_11_field_eq_bv : ∀ (n : Fin 2048),\n");
+        out.push_str("    @daa_11_lookup_table F _ (@bitsOf11 F _ n) =\n");
+        out.push_str("    ((daa_11_mle_bv (BitVec.ofNat 11 n.val)).toNat : F) := by\n");
+        out.push_str("  native_decide\n\n");
+
+        // Binary bridges: Fin 65536 overflows the stack, so use List.all
+        for name in ["and_8", "xor_8", "or_8", "add_8", "sub_8"] {
+            out.push_str(&format!(
+                "theorem {name}_field_eq_bv :\n    \
+                 (List.finRange 65536).all (fun n =>\n      \
+                 @{name}_lookup_table F _ (@bitsOf16 F _ n) ==\n      \
+                 (({name}_mle_bv (BitVec.ofNat 16 n.val)).toNat : F)) = true := by\n  \
+                 native_decide\n\n"
+            ));
+        }
+
         Ok(Module {
             name: "Proofs".into(),
             imports: vec![
@@ -278,13 +303,13 @@ mod tests {
     }
 
     #[test]
-    fn proof_count_is_39() {
+    fn proof_count_is_45() {
         let proofs = Sm83Proofs::extract();
         let module = proofs.as_module().unwrap();
         let contents = String::from_utf8(module.contents).unwrap();
         let count = contents.matches("\ntheorem ").count();
-        // 33 unary (8-var) + 1 DAA (11-var) + 5 binary (16-var) = 39
-        assert_eq!(count, 39, "expected 39 theorems (33 + 1 + 5)");
+        // 33 unary + 1 DAA bv + 5 binary bv + 1 DAA bridge + 5 binary bridges = 45
+        assert_eq!(count, 45, "expected 45 theorems (39 proofs + 6 bridges)");
     }
 
     #[test]
