@@ -1,0 +1,26 @@
+name = "Extracted SM83 ALU circuits"
+defaultTargets = ["SM83"]
+testDriver = "Tests"
+
+[[lean_lib]]
+name = "SM83"
+
+[[lean_lib]]
+name = "Tests"
+
+[[require]]
+name = "zkLean"
+git = "https://github.com/GaloisInc/zk-lean.git"
+rev = "4ea5a19a9e935174917595fef433b72f268b39cd"
+subDir = "zkLean"
+
+[[require]]
+name = "BVModEq"
+git = "https://github.com/GaloisInc/zk-lean.git"
+rev = "4ea5a19a9e935174917595fef433b72f268b39cd"
+subDir = "bvmod_eq"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.28.0-rc1"

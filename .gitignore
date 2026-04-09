@@ -1,3 +1,7 @@
 target/
 **/wit/deps
 roms/**/*
+jolt-full/
+ref/
+sm83-zk-lean/
+repomix-*.xml
