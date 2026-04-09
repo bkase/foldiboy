@@ -7,3 +7,4 @@ import SM83.Spec
 import SM83.BitVecBridge
 import SM83.Proofs
 import SM83.ConstraintProofs
+import SM83.InstructionProofs
