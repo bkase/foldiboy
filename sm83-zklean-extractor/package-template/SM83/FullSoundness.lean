@@ -550,6 +550,57 @@ theorem range_sum_r_bridge (step : SM83StepInputs g) (st : ZKState g) :
     simpa [ZKExpr.eval] using this
   · contradiction
 
+/-! ### Gap A: Table lookup bridge for bitwise ops
+
+The `table_constraint_and` gadget emits 8 R1CS constraints of the form
+`is_and * (r_bit_i - a_bit_i * b_bit_i) = 0`. When `is_and = 1` (one-hot),
+this forces `r_bit_i = a_bit_i * b_bit_i` for each bit i, which IS the
+closed-form polynomial for bitwise AND.
+
+Combined with the range sum constraint (from Gap H), this implies
+`alu_result = Σ (a_bit_i * b_bit_i) * 2^i = a AND b` (bitwise).
+-/
+
+set_option maxHeartbeats 3200000 in
+theorem table_constraint_and_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (table_constraint_and step) st).isSome →
+    step.is_and.eval * (step.r_bit_0.eval - step.a_bit_0.eval * step.b_bit_0.eval) = 0 ∧
+    step.is_and.eval * (step.r_bit_1.eval - step.a_bit_1.eval * step.b_bit_1.eval) = 0 ∧
+    step.is_and.eval * (step.r_bit_2.eval - step.a_bit_2.eval * step.b_bit_2.eval) = 0 ∧
+    step.is_and.eval * (step.r_bit_3.eval - step.a_bit_3.eval * step.b_bit_3.eval) = 0 ∧
+    step.is_and.eval * (step.r_bit_4.eval - step.a_bit_4.eval * step.b_bit_4.eval) = 0 ∧
+    step.is_and.eval * (step.r_bit_5.eval - step.a_bit_5.eval * step.b_bit_5.eval) = 0 ∧
+    step.is_and.eval * (step.r_bit_6.eval - step.a_bit_6.eval * step.b_bit_6.eval) = 0 ∧
+    step.is_and.eval * (step.r_bit_7.eval - step.a_bit_7.eval * step.b_bit_7.eval) = 0 := by
+  simp only [table_constraint_and, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
+  intro h
+  by_cases h0 : (step.is_and.eval * (step.r_bit_0.eval - step.a_bit_0.eval * step.b_bit_0.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0] at h
+  by_cases h1 : (step.is_and.eval * (step.r_bit_1.eval - step.a_bit_1.eval * step.b_bit_1.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1] at h
+  by_cases h2 : (step.is_and.eval * (step.r_bit_2.eval - step.a_bit_2.eval * step.b_bit_2.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2] at h
+  by_cases h3 : (step.is_and.eval * (step.r_bit_3.eval - step.a_bit_3.eval * step.b_bit_3.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3] at h
+  by_cases h4 : (step.is_and.eval * (step.r_bit_4.eval - step.a_bit_4.eval * step.b_bit_4.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4] at h
+  by_cases h5 : (step.is_and.eval * (step.r_bit_5.eval - step.a_bit_5.eval * step.b_bit_5.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5] at h
+  by_cases h6 : (step.is_and.eval * (step.r_bit_6.eval - step.a_bit_6.eval * step.b_bit_6.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6] at h
+  by_cases h7 : (step.is_and.eval * (step.r_bit_7.eval - step.a_bit_7.eval * step.b_bit_7.eval) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6, h7] at h
+  exact ⟨beq_iff_eq.mp h0, beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3,
+         beq_iff_eq.mp h4, beq_iff_eq.mp h5, beq_iff_eq.mp h6, beq_iff_eq.mp h7⟩
+
+/-- When `is_and = 1`, the bit-level AND constraint implies r_bit = a_bit * b_bit. -/
+theorem and_constraint_activates {p : ℕ} [Fact p.Prime]
+    {is_and r a b : ZMod p}
+    (h_constr : is_and * (r - a * b) = 0)
+    (h_one : is_and = 1) : r = a * b := by
+  rw [h_one, one_mul] at h_constr
+  exact sub_eq_zero.mp h_constr
+
 /-! ### Gap H: Status
 
 **Closed (constraints added, bridges proved):**

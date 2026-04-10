@@ -283,6 +283,55 @@ impl AsModule for Sm83Constraints {
         }
         out.push_str("\n");
 
+        // -- Sub-constraint: table_lookup_constraints (Gap A) --
+        // Uses the bit decomposition (from Gap H) to express bitwise operations
+        // as closed-form polynomials. For each bitwise op, the constraint is
+        // guarded by `is_X * (r_bit_i - expected_r_bit_i) = 0` so it only fires
+        // for that specific opcode (via one-hot from Gap I).
+        //
+        // Bitwise operations (closed form):
+        //   AND: r_bit_i = a_bit_i * b_bit_i
+        //   XOR: r_bit_i = a_bit_i + b_bit_i - 2 * a_bit_i * b_bit_i
+        //   OR:  r_bit_i = a_bit_i + b_bit_i - a_bit_i * b_bit_i
+        //
+        // Non-bitwise ops (ADD, SUB, INC, DEC, shifts, etc.) are handled via
+        // their sub-gadgets (carry_add, half_carry_add, etc.) combined with
+        // the result-bit decomposition from Gap H. The AND/XOR/OR closed-form
+        // constraints here demonstrate how the lookup is effectively encoded
+        // structurally without needing zkLean's lookup table API.
+        out.push_str("-- | Bitwise lookup constraint: for AND opcode, r_bit_i = a_bit_i * b_bit_i.\n");
+        out.push_str("def table_constraint_and [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        for i in 0..8 {
+            out.push_str(&format!(
+                "  ZKBuilder.constrainR1CS step.is_and (step.r_bit_{i} - step.a_bit_{i} * step.b_bit_{i}) 0\n"
+            ));
+        }
+        out.push_str("\n");
+        out.push_str("-- | Bitwise lookup constraint: for XOR opcode, r_bit_i = a_bit_i + b_bit_i - 2*a_bit_i*b_bit_i.\n");
+        out.push_str("def table_constraint_xor [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        for i in 0..8 {
+            out.push_str(&format!(
+                "  ZKBuilder.constrainR1CS step.is_xor (step.r_bit_{i} - (step.a_bit_{i} + step.b_bit_{i} - step.a_bit_{i} * step.b_bit_{i} * 2)) 0\n"
+            ));
+        }
+        out.push_str("\n");
+        out.push_str("-- | Bitwise lookup constraint: for OR opcode, r_bit_i = a_bit_i + b_bit_i - a_bit_i*b_bit_i.\n");
+        out.push_str("def table_constraint_or [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        for i in 0..8 {
+            out.push_str(&format!(
+                "  ZKBuilder.constrainR1CS step.is_or (step.r_bit_{i} - (step.a_bit_{i} + step.b_bit_{i} - step.a_bit_{i} * step.b_bit_{i})) 0\n"
+            ));
+        }
+        out.push_str("\n");
+        // Composed table_lookup_constraints
+        out.push_str("-- | Table lookup constraints: enforces alu_result matches the opcode's spec.\n");
+        out.push_str("-- | Closes Gap A (lookup invocation) structurally for bitwise ops via bit\n");
+        out.push_str("-- | decomposition. Non-bitwise ops are handled by carry/half-carry sub-gadgets.\n");
+        out.push_str("def table_lookup_constraints [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        out.push_str("  table_constraint_and step\n");
+        out.push_str("  table_constraint_xor step\n");
+        out.push_str("  table_constraint_or step\n\n");
+
         // -- Master constraint: Z flag --
         // is_zero_constraint is ALWAYS applied. It forces:
         //   result * result_inv = 1 - Z  and  Z * result = 0
@@ -295,6 +344,8 @@ impl AsModule for Sm83Constraints {
         out.push_str("  one_hot_constraints step\n");
         out.push_str("  -- Range check: ensures operands and result are in [0, 255] (Gap H)\n");
         out.push_str("  range_check_constraints step\n");
+        out.push_str("  -- Lookup table constraints: ties alu_result to the correct spec (Gap A, bitwise ops)\n");
+        out.push_str("  table_lookup_constraints step\n");
         out.push_str("  -- Z flag: always enforce is_zero relationship\n");
         out.push_str("  is_zero_constraint step\n");
         out.push_str("  -- N flag: must equal 1 for SUB/SBC/CP/DEC/CPL, 0 otherwise\n");
