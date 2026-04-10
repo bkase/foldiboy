@@ -52,6 +52,34 @@ const STEP_FIELDS: &[(&str, &str)] = &[
     ("is_cpl", "CPL opcode flag"),
     ("is_ccf", "CCF opcode flag"),
     ("is_scf", "SCF opcode flag"),
+    // Range-check bit decomposition witnesses (Gap H)
+    // 8 bits for alu_operand_a
+    ("a_bit_0", "Bit 0 of alu_operand_a"),
+    ("a_bit_1", "Bit 1 of alu_operand_a"),
+    ("a_bit_2", "Bit 2 of alu_operand_a"),
+    ("a_bit_3", "Bit 3 of alu_operand_a"),
+    ("a_bit_4", "Bit 4 of alu_operand_a"),
+    ("a_bit_5", "Bit 5 of alu_operand_a"),
+    ("a_bit_6", "Bit 6 of alu_operand_a"),
+    ("a_bit_7", "Bit 7 of alu_operand_a"),
+    // 8 bits for alu_operand_b
+    ("b_bit_0", "Bit 0 of alu_operand_b"),
+    ("b_bit_1", "Bit 1 of alu_operand_b"),
+    ("b_bit_2", "Bit 2 of alu_operand_b"),
+    ("b_bit_3", "Bit 3 of alu_operand_b"),
+    ("b_bit_4", "Bit 4 of alu_operand_b"),
+    ("b_bit_5", "Bit 5 of alu_operand_b"),
+    ("b_bit_6", "Bit 6 of alu_operand_b"),
+    ("b_bit_7", "Bit 7 of alu_operand_b"),
+    // 8 bits for alu_result
+    ("r_bit_0", "Bit 0 of alu_result"),
+    ("r_bit_1", "Bit 1 of alu_result"),
+    ("r_bit_2", "Bit 2 of alu_result"),
+    ("r_bit_3", "Bit 3 of alu_result"),
+    ("r_bit_4", "Bit 4 of alu_result"),
+    ("r_bit_5", "Bit 5 of alu_result"),
+    ("r_bit_6", "Bit 6 of alu_result"),
+    ("r_bit_7", "Bit 7 of alu_result"),
 ];
 
 impl AsModule for Sm83StepInputs {
@@ -201,6 +229,60 @@ impl AsModule for Sm83Constraints {
         out.push_str("  one_hot_bool_chunk_4 step\n");
         out.push_str("  one_hot_sum_constraint step\n\n");
 
+        // -- Sub-constraint: range_check_constraints (Gap H) --
+        // For each of alu_operand_a, alu_operand_b, alu_result:
+        //   - Each of the 8 bits is Boolean (is 0 or 1)
+        //   - The value equals the sum of bits * powers of 2
+        // Together these enforce that the value is in [0, 255] (assuming
+        // field characteristic > 256).
+        let value_prefixes = [
+            ("alu_operand_a", "a"),
+            ("alu_operand_b", "b"),
+            ("alu_result", "r"),
+        ];
+        for (value, prefix) in &value_prefixes {
+            // Boolean chunk (8 constraints)
+            out.push_str(&format!(
+                "-- | Range-check bit Boolean constraints for {value}.\n"
+            ));
+            out.push_str(&format!(
+                "def range_bool_{prefix} [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n"
+            ));
+            for i in 0..8 {
+                out.push_str(&format!(
+                    "  ZKBuilder.constrainR1CS step.{prefix}_bit_{i} (step.{prefix}_bit_{i} - 1) 0\n"
+                ));
+            }
+            out.push_str("\n");
+            // Sum constraint: value = sum of bits * 2^i
+            out.push_str(&format!(
+                "-- | Range-check sum constraint: {value} = Σ bit_i * 2^i.\n"
+            ));
+            out.push_str(&format!(
+                "def range_sum_{prefix} [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n"
+            ));
+            let sum_expr = (0..8)
+                .map(|i| {
+                    if i == 0 {
+                        format!("step.{prefix}_bit_{i}")
+                    } else {
+                        format!("step.{prefix}_bit_{i} * {}", 1u32 << i)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" + ");
+            out.push_str(&format!("  ZKBuilder.constrainEq step.{value} ({sum_expr})\n\n"));
+        }
+        // Composed range_check_constraints
+        out.push_str("-- | Range check: enforces alu_operand_a, alu_operand_b, alu_result ∈ [0, 255].\n");
+        out.push_str("-- | Closes Gap H (range constraints).\n");
+        out.push_str("def range_check_constraints [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        for (_, prefix) in &value_prefixes {
+            out.push_str(&format!("  range_bool_{prefix} step\n"));
+            out.push_str(&format!("  range_sum_{prefix} step\n"));
+        }
+        out.push_str("\n");
+
         // -- Master constraint: Z flag --
         // is_zero_constraint is ALWAYS applied. It forces:
         //   result * result_inv = 1 - Z  and  Z * result = 0
@@ -211,6 +293,8 @@ impl AsModule for Sm83Constraints {
         out.push_str("def master_constraints [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
         out.push_str("  -- One-hot encoding: ensures exactly one opcode flag is set (Gap I)\n");
         out.push_str("  one_hot_constraints step\n");
+        out.push_str("  -- Range check: ensures operands and result are in [0, 255] (Gap H)\n");
+        out.push_str("  range_check_constraints step\n");
         out.push_str("  -- Z flag: always enforce is_zero relationship\n");
         out.push_str("  is_zero_constraint step\n");
         out.push_str("  -- N flag: must equal 1 for SUB/SBC/CP/DEC/CPL, 0 otherwise\n");

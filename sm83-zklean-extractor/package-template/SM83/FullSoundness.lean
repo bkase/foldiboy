@@ -403,4 +403,170 @@ per-flag zero hypotheses directly, which the caller obtains from the
 one-hot bridges via this lemma (left as future work).
 -/
 
+/-! ### Gap H: Range bridges for `range_bool_{a,b,r}` and `range_sum_{a,b,r}`
+
+Each range_bool chunk has 8 Boolean constraints. Each range_sum chunk has
+1 equality constraint tying the value to its bit decomposition.
+-/
+
+set_option maxHeartbeats 3200000 in
+theorem range_bool_a_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (range_bool_a step) st).isSome →
+    step.a_bit_0.eval * (step.a_bit_0.eval - 1) = 0 ∧
+    step.a_bit_1.eval * (step.a_bit_1.eval - 1) = 0 ∧
+    step.a_bit_2.eval * (step.a_bit_2.eval - 1) = 0 ∧
+    step.a_bit_3.eval * (step.a_bit_3.eval - 1) = 0 ∧
+    step.a_bit_4.eval * (step.a_bit_4.eval - 1) = 0 ∧
+    step.a_bit_5.eval * (step.a_bit_5.eval - 1) = 0 ∧
+    step.a_bit_6.eval * (step.a_bit_6.eval - 1) = 0 ∧
+    step.a_bit_7.eval * (step.a_bit_7.eval - 1) = 0 := by
+  simp only [range_bool_a, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
+  intro h
+  by_cases h0 : (step.a_bit_0.eval * (step.a_bit_0.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0] at h
+  by_cases h1 : (step.a_bit_1.eval * (step.a_bit_1.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1] at h
+  by_cases h2 : (step.a_bit_2.eval * (step.a_bit_2.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2] at h
+  by_cases h3 : (step.a_bit_3.eval * (step.a_bit_3.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3] at h
+  by_cases h4 : (step.a_bit_4.eval * (step.a_bit_4.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4] at h
+  by_cases h5 : (step.a_bit_5.eval * (step.a_bit_5.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5] at h
+  by_cases h6 : (step.a_bit_6.eval * (step.a_bit_6.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6] at h
+  by_cases h7 : (step.a_bit_7.eval * (step.a_bit_7.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6, h7] at h
+  exact ⟨beq_iff_eq.mp h0, beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3,
+         beq_iff_eq.mp h4, beq_iff_eq.mp h5, beq_iff_eq.mp h6, beq_iff_eq.mp h7⟩
+
+set_option maxHeartbeats 3200000 in
+theorem range_bool_b_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (range_bool_b step) st).isSome →
+    step.b_bit_0.eval * (step.b_bit_0.eval - 1) = 0 ∧
+    step.b_bit_1.eval * (step.b_bit_1.eval - 1) = 0 ∧
+    step.b_bit_2.eval * (step.b_bit_2.eval - 1) = 0 ∧
+    step.b_bit_3.eval * (step.b_bit_3.eval - 1) = 0 ∧
+    step.b_bit_4.eval * (step.b_bit_4.eval - 1) = 0 ∧
+    step.b_bit_5.eval * (step.b_bit_5.eval - 1) = 0 ∧
+    step.b_bit_6.eval * (step.b_bit_6.eval - 1) = 0 ∧
+    step.b_bit_7.eval * (step.b_bit_7.eval - 1) = 0 := by
+  simp only [range_bool_b, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
+  intro h
+  by_cases h0 : (step.b_bit_0.eval * (step.b_bit_0.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0] at h
+  by_cases h1 : (step.b_bit_1.eval * (step.b_bit_1.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1] at h
+  by_cases h2 : (step.b_bit_2.eval * (step.b_bit_2.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2] at h
+  by_cases h3 : (step.b_bit_3.eval * (step.b_bit_3.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3] at h
+  by_cases h4 : (step.b_bit_4.eval * (step.b_bit_4.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4] at h
+  by_cases h5 : (step.b_bit_5.eval * (step.b_bit_5.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5] at h
+  by_cases h6 : (step.b_bit_6.eval * (step.b_bit_6.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6] at h
+  by_cases h7 : (step.b_bit_7.eval * (step.b_bit_7.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6, h7] at h
+  exact ⟨beq_iff_eq.mp h0, beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3,
+         beq_iff_eq.mp h4, beq_iff_eq.mp h5, beq_iff_eq.mp h6, beq_iff_eq.mp h7⟩
+
+set_option maxHeartbeats 3200000 in
+theorem range_bool_r_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (range_bool_r step) st).isSome →
+    step.r_bit_0.eval * (step.r_bit_0.eval - 1) = 0 ∧
+    step.r_bit_1.eval * (step.r_bit_1.eval - 1) = 0 ∧
+    step.r_bit_2.eval * (step.r_bit_2.eval - 1) = 0 ∧
+    step.r_bit_3.eval * (step.r_bit_3.eval - 1) = 0 ∧
+    step.r_bit_4.eval * (step.r_bit_4.eval - 1) = 0 ∧
+    step.r_bit_5.eval * (step.r_bit_5.eval - 1) = 0 ∧
+    step.r_bit_6.eval * (step.r_bit_6.eval - 1) = 0 ∧
+    step.r_bit_7.eval * (step.r_bit_7.eval - 1) = 0 := by
+  simp only [range_bool_r, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
+  intro h
+  by_cases h0 : (step.r_bit_0.eval * (step.r_bit_0.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0] at h
+  by_cases h1 : (step.r_bit_1.eval * (step.r_bit_1.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1] at h
+  by_cases h2 : (step.r_bit_2.eval * (step.r_bit_2.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2] at h
+  by_cases h3 : (step.r_bit_3.eval * (step.r_bit_3.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3] at h
+  by_cases h4 : (step.r_bit_4.eval * (step.r_bit_4.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4] at h
+  by_cases h5 : (step.r_bit_5.eval * (step.r_bit_5.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5] at h
+  by_cases h6 : (step.r_bit_6.eval * (step.r_bit_6.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6] at h
+  by_cases h7 : (step.r_bit_7.eval * (step.r_bit_7.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h0, h1, h2, h3, h4, h5, h6, h7] at h
+  exact ⟨beq_iff_eq.mp h0, beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3,
+         beq_iff_eq.mp h4, beq_iff_eq.mp h5, beq_iff_eq.mp h6, beq_iff_eq.mp h7⟩
+
+set_option maxHeartbeats 800000 in
+theorem range_sum_a_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (range_sum_a step) st).isSome →
+    step.alu_operand_a.eval =
+      step.a_bit_0.eval + step.a_bit_1.eval * 2 + step.a_bit_2.eval * 4 +
+      step.a_bit_3.eval * 8 + step.a_bit_4.eval * 16 + step.a_bit_5.eval * 32 +
+      step.a_bit_6.eval * 64 + step.a_bit_7.eval * 128 := by
+  simp only [range_sum_a, runZKBuilder_constrainEq_eq]
+  intro h
+  split at h
+  · next heq =>
+    have := beq_iff_eq.mp heq
+    simpa [ZKExpr.eval] using this
+  · contradiction
+
+set_option maxHeartbeats 800000 in
+theorem range_sum_b_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (range_sum_b step) st).isSome →
+    step.alu_operand_b.eval =
+      step.b_bit_0.eval + step.b_bit_1.eval * 2 + step.b_bit_2.eval * 4 +
+      step.b_bit_3.eval * 8 + step.b_bit_4.eval * 16 + step.b_bit_5.eval * 32 +
+      step.b_bit_6.eval * 64 + step.b_bit_7.eval * 128 := by
+  simp only [range_sum_b, runZKBuilder_constrainEq_eq]
+  intro h
+  split at h
+  · next heq =>
+    have := beq_iff_eq.mp heq
+    simpa [ZKExpr.eval] using this
+  · contradiction
+
+set_option maxHeartbeats 800000 in
+theorem range_sum_r_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (range_sum_r step) st).isSome →
+    step.alu_result.eval =
+      step.r_bit_0.eval + step.r_bit_1.eval * 2 + step.r_bit_2.eval * 4 +
+      step.r_bit_3.eval * 8 + step.r_bit_4.eval * 16 + step.r_bit_5.eval * 32 +
+      step.r_bit_6.eval * 64 + step.r_bit_7.eval * 128 := by
+  simp only [range_sum_r, runZKBuilder_constrainEq_eq]
+  intro h
+  split at h
+  · next heq =>
+    have := beq_iff_eq.mp heq
+    simpa [ZKExpr.eval] using this
+  · contradiction
+
+/-! ### Gap H: Status
+
+**Closed (constraints added, bridges proved):**
+- StepInputs has 24 new bit fields: `a_bit_0..7`, `b_bit_0..7`, `r_bit_0..7`
+- `range_bool_{a,b,r}` in generator: 8 Boolean constraints per value
+- `range_sum_{a,b,r}` in generator: 1 sum constraint per value (value = Σ bᵢ·2ⁱ)
+- `range_check_constraints` composes all 27 constraints
+- `master_constraints` now invokes `range_check_constraints`
+- `range_bool_{a,b,r}_bridge` extracts the 24 bit Boolean equations
+- `range_sum_{a,b,r}_bridge` extracts the 3 bit-decomposition equations
+
+**Remaining (derivation to natural number bound):**
+The lemma "each bit Boolean + sum = bit decomposition implies value.val ≤ 255"
+is provable by 256-way case analysis on the 8 bits. A clean proof requires
+`ZMod.val_natCast_of_lt` and arithmetic over the 256 concrete cases. For
+now, the bridges provide the raw bit decomposition equations, and the
+caller must derive the range bound via this lemma (left as future work).
+-/
+
 end SM83.FullSoundness
