@@ -728,23 +728,80 @@ theorem and_constraint_activates {p : ℕ} [Fact p.Prime]
   rw [h_one, one_mul] at h_constr
   exact sub_eq_zero.mp h_constr
 
-/-! ### Gap H: Status
+/-! ### Gap H derivation: bit decomposition implies value ≤ 255
 
-**Closed (constraints added, bridges proved):**
-- StepInputs has 24 new bit fields: `a_bit_0..7`, `b_bit_0..7`, `r_bit_0..7`
-- `range_bool_{a,b,r}` in generator: 8 Boolean constraints per value
-- `range_sum_{a,b,r}` in generator: 1 sum constraint per value (value = Σ bᵢ·2ⁱ)
-- `range_check_constraints` composes all 27 constraints
-- `master_constraints` now invokes `range_check_constraints`
-- `range_bool_{a,b,r}_bridge` extracts the 24 bit Boolean equations
-- `range_sum_{a,b,r}_bridge` extracts the 3 bit-decomposition equations
+Key lemma: For 8 Booleans and a value equal to `Σ bᵢ * 2ⁱ`, the value
+(interpreted as a natural via `ZMod.val`) is at most 255.
 
-**Remaining (derivation to natural number bound):**
-The lemma "each bit Boolean + sum = bit decomposition implies value.val ≤ 255"
-is provable by 256-way case analysis on the 8 bits. A clean proof requires
-`ZMod.val_natCast_of_lt` and arithmetic over the 256 concrete cases. For
-now, the bridges provide the raw bit decomposition equations, and the
-caller must derive the range bound via this lemma (left as future work).
+Proof strategy:
+1. Each `bᵢ.val ≤ 1` (since Boolean).
+2. `(bᵢ * (2^i : ZMod p)).val ≤ bᵢ.val * 2^i ≤ 2^i` by `ZMod.val_mul_le`
+   and the bound on `(2^i : ZMod p).val` (which equals `2^i` when `2^i < p`).
+3. The sum `(b₀ + 2*b₁ + 4*b₂ + ... + 128*b₇).val ≤ 1 + 2 + 4 + ... + 128 = 255`
+   by iterated `ZMod.val_add_le`.
 -/
+
+/-- For natural `n < p`, `((n : ZMod p)).val = n`. -/
+private theorem zmod_val_natcast_lt {p : ℕ} [Fact p.Prime] (n : ℕ) (h : n < p) :
+    ((n : ZMod p)).val = n := by
+  rw [ZMod.val_natCast, Nat.mod_eq_of_lt h]
+
+/-- For Boolean `b` and natural `n < p`, `(b * (n : ZMod p)).val ≤ n`. -/
+private theorem val_mul_bool_le {p : ℕ} [Fact p.Prime] {b : ZMod p} {n : ℕ}
+    (hb : b = 0 ∨ b = 1) (hn : n < p) :
+    (b * (n : ZMod p)).val ≤ n := by
+  rcases hb with rfl | rfl
+  · simp
+  · rw [one_mul, zmod_val_natcast_lt n hn]
+
+/-- Range decomposition bound: 8 Boolean bits form a value ≤ 255. -/
+theorem bit_decomposition_val_le {p : ℕ} [Fact p.Prime] (hp_big : 256 < p)
+    {b₀ b₁ b₂ b₃ b₄ b₅ b₆ b₇ : ZMod p}
+    (h₀ : b₀ = 0 ∨ b₀ = 1) (h₁ : b₁ = 0 ∨ b₁ = 1) (h₂ : b₂ = 0 ∨ b₂ = 1)
+    (h₃ : b₃ = 0 ∨ b₃ = 1) (h₄ : b₄ = 0 ∨ b₄ = 1) (h₅ : b₅ = 0 ∨ b₅ = 1)
+    (h₆ : b₆ = 0 ∨ b₆ = 1) (h₇ : b₇ = 0 ∨ b₇ = 1) :
+    (b₀ + b₁ * 2 + b₂ * 4 + b₃ * 8 + b₄ * 16 + b₅ * 32 + b₆ * 64 + b₇ * 128).val ≤ 255 := by
+  -- Each individual product has val ≤ 2^i
+  have hb₀ : b₀.val ≤ 1 := val_add_bool h₀
+  have hb₁ : (b₁ * (2 : ZMod p)).val ≤ 2 := by
+    have : ((2 : ℕ) : ZMod p) = 2 := by norm_cast
+    rw [← this]; exact val_mul_bool_le h₁ (by omega)
+  have hb₂ : (b₂ * (4 : ZMod p)).val ≤ 4 := by
+    have : ((4 : ℕ) : ZMod p) = 4 := by norm_cast
+    rw [← this]; exact val_mul_bool_le h₂ (by omega)
+  have hb₃ : (b₃ * (8 : ZMod p)).val ≤ 8 := by
+    have : ((8 : ℕ) : ZMod p) = 8 := by norm_cast
+    rw [← this]; exact val_mul_bool_le h₃ (by omega)
+  have hb₄ : (b₄ * (16 : ZMod p)).val ≤ 16 := by
+    have : ((16 : ℕ) : ZMod p) = 16 := by norm_cast
+    rw [← this]; exact val_mul_bool_le h₄ (by omega)
+  have hb₅ : (b₅ * (32 : ZMod p)).val ≤ 32 := by
+    have : ((32 : ℕ) : ZMod p) = 32 := by norm_cast
+    rw [← this]; exact val_mul_bool_le h₅ (by omega)
+  have hb₆ : (b₆ * (64 : ZMod p)).val ≤ 64 := by
+    have : ((64 : ℕ) : ZMod p) = 64 := by norm_cast
+    rw [← this]; exact val_mul_bool_le h₆ (by omega)
+  have hb₇ : (b₇ * (128 : ZMod p)).val ≤ 128 := by
+    have : ((128 : ℕ) : ZMod p) = 128 := by norm_cast
+    rw [← this]; exact val_mul_bool_le h₇ (by omega)
+  -- Sum bounds via ZMod.val_add_le
+  have s1 : (b₀ + b₁ * 2).val ≤ 1 + 2 :=
+    le_trans (ZMod.val_add_le _ _) (by omega)
+  have s2 : (b₀ + b₁ * 2 + b₂ * 4).val ≤ 1 + 2 + 4 :=
+    le_trans (ZMod.val_add_le _ _) (by omega)
+  have s3 : (b₀ + b₁ * 2 + b₂ * 4 + b₃ * 8).val ≤ 1 + 2 + 4 + 8 :=
+    le_trans (ZMod.val_add_le _ _) (by omega)
+  have s4 : (b₀ + b₁ * 2 + b₂ * 4 + b₃ * 8 + b₄ * 16).val ≤ 1 + 2 + 4 + 8 + 16 :=
+    le_trans (ZMod.val_add_le _ _) (by omega)
+  have s5 : (b₀ + b₁ * 2 + b₂ * 4 + b₃ * 8 + b₄ * 16 + b₅ * 32).val ≤ 1 + 2 + 4 + 8 + 16 + 32 :=
+    le_trans (ZMod.val_add_le _ _) (by omega)
+  have s6 : (b₀ + b₁ * 2 + b₂ * 4 + b₃ * 8 + b₄ * 16 + b₅ * 32 + b₆ * 64).val ≤
+            1 + 2 + 4 + 8 + 16 + 32 + 64 :=
+    le_trans (ZMod.val_add_le _ _) (by omega)
+  calc (b₀ + b₁ * 2 + b₂ * 4 + b₃ * 8 + b₄ * 16 + b₅ * 32 + b₆ * 64 + b₇ * 128).val
+      ≤ (b₀ + b₁ * 2 + b₂ * 4 + b₃ * 8 + b₄ * 16 + b₅ * 32 + b₆ * 64).val +
+        (b₇ * 128).val := ZMod.val_add_le _ _
+    _ ≤ (1 + 2 + 4 + 8 + 16 + 32 + 64) + 128 := by omega
+    _ = 255 := by omega
 
 end SM83.FullSoundness
