@@ -10,3 +10,4 @@ import SM83.ConstraintProofs
 import SM83.InstructionProofs
 import SM83.SemanticBridge
 import SM83.EndToEnd
+import SM83.FullSoundness
