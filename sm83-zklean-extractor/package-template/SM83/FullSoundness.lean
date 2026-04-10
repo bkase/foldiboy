@@ -1,5 +1,6 @@
 import Mathlib.Algebra.Field.ZMod
 import Mathlib.Algebra.Field.Basic
+import Mathlib.Tactic.LinearCombination
 import SM83.SemanticBridge
 import SM83.ConstraintProofs
 import SM83.EndToEnd
@@ -386,21 +387,147 @@ theorem one_hot_sum_constraint_bridge (step : SM83StepInputs g) (st : ZKState g)
     simpa using this
   · contradiction
 
+/-! ### Gap I derivation: sum of Booleans = 0 ⇒ all 0
+
+Key lemma for Gap I's soundness: a list of Booleans in `ZMod p` with length
+less than `p` summing to 0 must have all elements equal to 0.
+-/
+
+/-- `(x + y).val ≤ x.val + y.val` when `x.val + y.val < p`. -/
+private theorem val_add_bool {p : ℕ} [hp : Fact p.Prime] {x : ZMod p}
+    (hx : x = 0 ∨ x = 1) : x.val ≤ 1 := by
+  rcases hx with rfl | rfl
+  · simp
+  · simp [ZMod.val_one]
+
+/-- The val of a sum of Booleans is bounded by the list length. -/
+theorem sum_bool_val_le {p : ℕ} [hp : Fact p.Prime]
+    (xs : List (ZMod p)) (hlen : xs.length < p)
+    (hb : ∀ x ∈ xs, x = 0 ∨ x = 1) :
+    xs.sum.val ≤ xs.length := by
+  induction xs with
+  | nil => simp
+  | cons x xs ih =>
+    have hlen' : xs.length < p := by simp at hlen; omega
+    have hb' : ∀ y ∈ xs, y = 0 ∨ y = 1 :=
+      fun y hy => hb y (List.mem_cons_of_mem _ hy)
+    have ih' := ih hlen' hb'
+    have hx_val : x.val ≤ 1 := val_add_bool (hb x (List.mem_cons_self))
+    have h_bound : x.val + xs.sum.val < p := by
+      have : x.val + xs.sum.val ≤ 1 + xs.length := by omega
+      calc x.val + xs.sum.val ≤ 1 + xs.length := this
+        _ = xs.length + 1 := by omega
+        _ = (x :: xs).length := by simp
+        _ < p := hlen
+    have h_sum : (x + xs.sum).val = x.val + xs.sum.val := ZMod.val_add_of_lt h_bound
+    simp only [List.sum_cons, List.length_cons]
+    rw [h_sum]
+    omega
+
+/-- Sum of Booleans = 0 in ZMod p (with length < p) implies each is 0. -/
+theorem sum_bool_eq_zero_all_zero {p : ℕ} [hp : Fact p.Prime]
+    (xs : List (ZMod p)) (hlen : xs.length < p)
+    (hb : ∀ x ∈ xs, x = 0 ∨ x = 1) (hsum : xs.sum = 0) :
+    ∀ x ∈ xs, x = 0 := by
+  induction xs with
+  | nil => intro x hx; simp at hx
+  | cons x xs ih =>
+    have hlen' : xs.length < p := by simp at hlen; omega
+    have hb' : ∀ y ∈ xs, y = 0 ∨ y = 1 :=
+      fun y hy => hb y (List.mem_cons_of_mem _ hy)
+    have hx : x = 0 ∨ x = 1 := hb x (List.mem_cons_self)
+    -- Key claim: x = 0 (otherwise derive contradiction from hsum)
+    have h_x_zero : x = 0 := by
+      rcases hx with hx | hx
+      · exact hx
+      · -- x = 1: hsum says 1 + xs.sum = 0. But (1 + xs.sum).val = 1 + xs.sum.val
+        -- (no wraparound since 1 + xs.length < p), and this is ≥ 1 > 0, so
+        -- 1 + xs.sum ≠ 0 in ZMod p. Contradiction.
+        exfalso
+        have h_cons : (x :: xs).sum = 0 := hsum
+        rw [List.sum_cons, hx] at h_cons
+        have h_xs_val_le : xs.sum.val ≤ xs.length := sum_bool_val_le xs hlen' hb'
+        have h_bound : (1 : ZMod p).val + xs.sum.val < p := by
+          rw [ZMod.val_one]
+          have : xs.length + 1 < p := by simp at hlen; omega
+          omega
+        have h_val_eq : (1 + xs.sum).val = (1 : ZMod p).val + xs.sum.val :=
+          ZMod.val_add_of_lt h_bound
+        rw [h_cons] at h_val_eq
+        rw [ZMod.val_zero, ZMod.val_one] at h_val_eq
+        omega
+    -- With x = 0, xs.sum = 0, apply IH to xs
+    have h_xs_sum_zero : xs.sum = 0 := by
+      have := hsum
+      rw [List.sum_cons, h_x_zero, zero_add] at this
+      exact this
+    have h_xs_all := ih hlen' hb' h_xs_sum_zero
+    intro y hy
+    rcases List.mem_cons.mp hy with rfl | hy
+    · exact h_x_zero
+    · exact h_xs_all y hy
+
+/-- For ADD: derive `N = 0` from one-hot Boolean + sum constraints + `is_add = 1`.
+    Uses `sum_bool_eq_zero_all_zero` to show all non-ADD flags are 0. -/
+theorem add_N_derived_from_onehot
+    {is_add is_adc is_sub is_sbc is_and is_xor is_or is_cp
+     is_inc is_dec is_rlc is_rrc is_rl is_rr is_sla is_sra is_srl is_swap
+     is_daa is_cpl is_ccf is_scf flag_n : ZMod p}
+    (hp_big : 22 < p)
+    (h_add : is_add = 1)
+    (ha : is_add = 0 ∨ is_add = 1) (hb : is_adc = 0 ∨ is_adc = 1)
+    (hc : is_sub = 0 ∨ is_sub = 1) (hd : is_sbc = 0 ∨ is_sbc = 1)
+    (he : is_and = 0 ∨ is_and = 1) (hf : is_xor = 0 ∨ is_xor = 1)
+    (hg : is_or = 0 ∨ is_or = 1) (hh : is_cp = 0 ∨ is_cp = 1)
+    (hi : is_inc = 0 ∨ is_inc = 1) (hj : is_dec = 0 ∨ is_dec = 1)
+    (hk : is_rlc = 0 ∨ is_rlc = 1) (hl : is_rrc = 0 ∨ is_rrc = 1)
+    (hm : is_rl = 0 ∨ is_rl = 1) (hn : is_rr = 0 ∨ is_rr = 1)
+    (ho : is_sla = 0 ∨ is_sla = 1) (hq : is_sra = 0 ∨ is_sra = 1)
+    (hr : is_srl = 0 ∨ is_srl = 1) (hs : is_swap = 0 ∨ is_swap = 1)
+    (ht : is_daa = 0 ∨ is_daa = 1) (hu : is_cpl = 0 ∨ is_cpl = 1)
+    (hv : is_ccf = 0 ∨ is_ccf = 1) (hw : is_scf = 0 ∨ is_scf = 1)
+    (h_sum : is_add + is_adc + is_sub + is_sbc + is_and + is_xor + is_or + is_cp +
+             is_inc + is_dec + is_rlc + is_rrc + is_rl + is_rr + is_sla + is_sra +
+             is_srl + is_swap + is_daa + is_cpl + is_ccf + is_scf = 1)
+    (h_n_eq : flag_n = is_sub + is_sbc + is_cp + is_dec + is_cpl) :
+    flag_n = 0 := by
+  let others : List (ZMod p) := [is_adc, is_sub, is_sbc, is_and, is_xor, is_or,
+    is_cp, is_inc, is_dec, is_rlc, is_rrc, is_rl, is_rr, is_sla, is_sra,
+    is_srl, is_swap, is_daa, is_cpl, is_ccf, is_scf]
+  have h_others_len_lt : others.length < p := by show 21 < p; omega
+  have h_others_bool : ∀ x ∈ others, x = 0 ∨ x = 1 := by
+    intro x hx
+    simp [others, List.mem_cons] at hx
+    rcases hx with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl |
+          rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+    all_goals assumption
+  have h_others_sum : others.sum = 0 := by
+    show is_adc + (is_sub + (is_sbc + (is_and + (is_xor + (is_or + (is_cp +
+      (is_inc + (is_dec + (is_rlc + (is_rrc + (is_rl + (is_rr + (is_sla +
+      (is_sra + (is_srl + (is_swap + (is_daa + (is_cpl + (is_ccf +
+      (is_scf + 0)))))))))))))))))))) = 0
+    linear_combination h_sum - h_add
+  have h_all_zero := sum_bool_eq_zero_all_zero others h_others_len_lt h_others_bool h_others_sum
+  have h_is_sub : is_sub = 0 := h_all_zero is_sub (by simp [others])
+  have h_is_sbc : is_sbc = 0 := h_all_zero is_sbc (by simp [others])
+  have h_is_cp : is_cp = 0 := h_all_zero is_cp (by simp [others])
+  have h_is_dec : is_dec = 0 := h_all_zero is_dec (by simp [others])
+  have h_is_cpl : is_cpl = 0 := h_all_zero is_cpl (by simp [others])
+  rw [h_n_eq, h_is_sub, h_is_sbc, h_is_cp, h_is_dec, h_is_cpl]
+  simp
+
 /-! ### Gap I: Status
 
 **Closed (constraints added, bridges proved):**
 - `one_hot_constraints` in the generator emits 22 Boolean + 1 sum constraint.
 - `one_hot_bool_chunk_{1-4}_bridge` extracts the 22 Boolean equations.
 - `one_hot_sum_constraint_bridge` extracts the sum-to-1 equation.
+- `sum_bool_val_le`: `xs.sum.val ≤ xs.length` for Boolean lists.
+- `sum_bool_eq_zero_all_zero`: sum of 0 ⇒ all 0 (via Nat sum).
 
-**Remaining (derivation from hypotheses to per-flag zero):**
-The lemma "sum of 21 Booleans = 0 in ZMod p (p > 22) implies all are 0"
-is provable via `ZMod.val` + Nat bound reasoning (`xs.sum.val ≤ 21 < p` so
-no wraparound). A complete proof requires either a 21-variable inductive
-argument over a list or a Finset-based formulation. For now, the
-compositional theorems (`add_compositional_algebraic` etc.) take the
-per-flag zero hypotheses directly, which the caller obtains from the
-one-hot bridges via this lemma (left as future work).
+**Fully provable using `sum_bool_eq_zero_all_zero`:** the derivation
+"one_hot + is_X = 1 ⇒ all other flags = 0" follows by subtracting to get
+the other-flag sum equal to 0, then applying this lemma.
 -/
 
 /-! ### Gap H: Range bridges for `range_bool_{a,b,r}` and `range_sum_{a,b,r}`

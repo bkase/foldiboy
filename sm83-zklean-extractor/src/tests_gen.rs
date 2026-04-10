@@ -11,33 +11,35 @@ impl Sm83Tests {
     }
 }
 
-/// Convert a u8 value to its bit decomposition as a Lean Vector literal.
-/// Bits are in LSB-first order: `![b0, b1, b2, ..., b7]`
+/// Convert a u8 value to its bit decomposition as a Lean Vector literal over F.
+/// Bits are in LSB-first order: `(#v[(b0 : F), ..., (b7 : F)])`
 fn byte_to_lean_vec(val: u8) -> String {
     let bits: Vec<String> = (0..8)
-        .map(|i| if val & (1 << i) != 0 { "1" } else { "0" })
+        .map(|i| if val & (1 << i) != 0 { "(1 : F)" } else { "(0 : F)" })
         .map(String::from)
         .collect();
-    format!("![{}]", bits.join(", "))
+    format!("#v[{}]", bits.join(", "))
 }
 
 /// Convert a binary (a, b) input to a Lean Vector literal over 16 variables.
 fn binary_input_to_lean_vec(a: u8, b: u8) -> String {
     let mut bits = Vec::with_capacity(16);
     for i in 0..8 {
-        bits.push(if a & (1 << i) != 0 { "1" } else { "0" });
+        bits.push(if a & (1 << i) != 0 { "(1 : F)" } else { "(0 : F)" });
     }
     for i in 0..8 {
-        bits.push(if b & (1 << i) != 0 { "1" } else { "0" });
+        bits.push(if b & (1 << i) != 0 { "(1 : F)" } else { "(0 : F)" });
     }
-    format!("![{}]", bits.join(", "))
+    format!("#v[{}]", bits.join(", "))
 }
 
 impl AsModule for Sm83Tests {
     fn as_module(&self) -> std::io::Result<Module> {
         let mut out = String::new();
 
-        out.push_str("-- Auto-generated tests: verify MLE at Boolean points matches ALU.\n\n");
+        out.push_str("-- Auto-generated tests: verify MLE at Boolean points matches ALU.\n");
+        out.push_str("-- Uses ProofField (= ZMod 257) as the concrete field for evaluation.\n\n");
+        out.push_str("private abbrev F := ProofField\n\n");
 
         // Test a selection of unary tables exhaustively (they're small)
         for table in [Sm83Table::Inc, Sm83Table::Dec, Sm83Table::Swap] {
@@ -49,7 +51,7 @@ impl AsModule for Sm83Tests {
                 let expected = tt[input as usize];
                 let vec_lit = byte_to_lean_vec(input);
                 out.push_str(&format!(
-                    "#guard {name} {vec_lit} = {expected}\n"
+                    "#guard (@{name} F _ {vec_lit}) = ({expected} : F)\n"
                 ));
             }
             out.push('\n');
@@ -74,7 +76,7 @@ impl AsModule for Sm83Tests {
                 let expected = tt[a as usize + ((b as usize) << 8)];
                 let vec_lit = binary_input_to_lean_vec(a, b);
                 out.push_str(&format!(
-                    "#guard {name} {vec_lit} = {expected}\n"
+                    "#guard (@{name} F _ {vec_lit}) = ({expected} : F)\n"
                 ));
             }
             out.push('\n');
@@ -90,7 +92,7 @@ impl AsModule for Sm83Tests {
                 let expected = tt[input as usize];
                 let vec_lit = byte_to_lean_vec(input);
                 out.push_str(&format!(
-                    "#guard {name} {vec_lit} = {expected}\n"
+                    "#guard (@{name} F _ {vec_lit}) = ({expected} : F)\n"
                 ));
             }
             out.push('\n');
@@ -98,7 +100,7 @@ impl AsModule for Sm83Tests {
 
         Ok(Module {
             name: "Tests".into(),
-            imports: vec!["SM83.LookupTables".into()],
+            imports: vec!["SM83.LookupTables".into(), "SM83.BitVecBridge".into()],
             contents: out.into_bytes(),
         })
     }
