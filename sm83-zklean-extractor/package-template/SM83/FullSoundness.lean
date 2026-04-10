@@ -804,4 +804,78 @@ theorem bit_decomposition_val_le {p : ℕ} [Fact p.Prime] (hp_big : 256 < p)
     _ ≤ (1 + 2 + 4 + 8 + 16 + 32 + 64) + 128 := by omega
     _ = 255 := by omega
 
+/-! ### Gap A derivation: bit-level AND implies per-bit Nat multiplication
+
+Key lemmas connecting the field-level AND bit constraint to Nat-level semantics:
+1. For Boolean a, b in ZMod p, `(a * b).val = a.val * b.val` (the product of
+   two {0,1} values never wraps around).
+2. For the AND bit constraint `is_and * (r - a * b) = 0` with `is_and = 1`,
+   we get `r = a * b` in the field, hence `r.val = a.val * b.val` as Nats.
+3. Summing the per-bit products gives the value-level AND relation.
+-/
+
+/-- For Booleans a, b in ZMod p, (a * b).val = a.val * b.val. No wraparound
+    since the product is itself in {0, 1}. -/
+theorem val_bool_mul_bool {p : ℕ} [Fact p.Prime] {a b : ZMod p}
+    (ha : a = 0 ∨ a = 1) (hb : b = 0 ∨ b = 1) :
+    (a * b).val = a.val * b.val := by
+  rcases ha with rfl | rfl
+  · simp
+  · rcases hb with rfl | rfl
+    · simp
+    · simp [ZMod.val_one]
+
+/-- Gap A per-bit soundness for AND: given the bit-level AND constraint
+    and `is_and = 1`, the result bit equals the product of operand bits at
+    the Nat level: `r_bit.val = a_bit.val * b_bit.val`. -/
+theorem and_per_bit_nat_sound {p : ℕ} [Fact p.Prime]
+    {is_and a_bit b_bit r_bit : ZMod p}
+    (h_is_and : is_and = 1)
+    (h_bit_constr : is_and * (r_bit - a_bit * b_bit) = 0)
+    (ha : a_bit = 0 ∨ a_bit = 1)
+    (hb : b_bit = 0 ∨ b_bit = 1) :
+    r_bit.val = a_bit.val * b_bit.val := by
+  have h_eq : r_bit = a_bit * b_bit := and_constraint_activates h_bit_constr h_is_and
+  rw [h_eq]
+  exact val_bool_mul_bool ha hb
+
+/-- The value-level AND equality via bit decomposition. Given:
+    - `is_and = 1` (one-hot for AND)
+    - All 8 result bits satisfy the AND constraint
+    - All 24 bits (a, b, r) are Boolean
+    - `alu_result = Σ r_bit_i * 2^i` (from range sum)
+
+    Then: `alu_result = Σ (a_bit_i * b_bit_i) * 2^i`. This is the value-level
+    expression of bitwise AND via bit decomposition — the structural content
+    of the AND lookup. -/
+theorem and_value_sound {p : ℕ} [Fact p.Prime]
+    {is_and alu_result : ZMod p}
+    {a₀ a₁ a₂ a₃ a₄ a₅ a₆ a₇ : ZMod p}
+    {b₀ b₁ b₂ b₃ b₄ b₅ b₆ b₇ : ZMod p}
+    {r₀ r₁ r₂ r₃ r₄ r₅ r₆ r₇ : ZMod p}
+    (h_is_and : is_and = 1)
+    -- Bit-level AND constraints (from table_constraint_and_bridge):
+    (hbc₀ : is_and * (r₀ - a₀ * b₀) = 0)
+    (hbc₁ : is_and * (r₁ - a₁ * b₁) = 0)
+    (hbc₂ : is_and * (r₂ - a₂ * b₂) = 0)
+    (hbc₃ : is_and * (r₃ - a₃ * b₃) = 0)
+    (hbc₄ : is_and * (r₄ - a₄ * b₄) = 0)
+    (hbc₅ : is_and * (r₅ - a₅ * b₅) = 0)
+    (hbc₆ : is_and * (r₆ - a₆ * b₆) = 0)
+    (hbc₇ : is_and * (r₇ - a₇ * b₇) = 0)
+    -- Range sum for result (from range_sum_r_bridge):
+    (h_r_sum : alu_result = r₀ + r₁ * 2 + r₂ * 4 + r₃ * 8 +
+                            r₄ * 16 + r₅ * 32 + r₆ * 64 + r₇ * 128) :
+    alu_result = a₀ * b₀ + a₁ * b₁ * 2 + a₂ * b₂ * 4 + a₃ * b₃ * 8 +
+                 a₄ * b₄ * 16 + a₅ * b₅ * 32 + a₆ * b₆ * 64 + a₇ * b₇ * 128 := by
+  have e₀ : r₀ = a₀ * b₀ := and_constraint_activates hbc₀ h_is_and
+  have e₁ : r₁ = a₁ * b₁ := and_constraint_activates hbc₁ h_is_and
+  have e₂ : r₂ = a₂ * b₂ := and_constraint_activates hbc₂ h_is_and
+  have e₃ : r₃ = a₃ * b₃ := and_constraint_activates hbc₃ h_is_and
+  have e₄ : r₄ = a₄ * b₄ := and_constraint_activates hbc₄ h_is_and
+  have e₅ : r₅ = a₅ * b₅ := and_constraint_activates hbc₅ h_is_and
+  have e₆ : r₆ = a₆ * b₆ := and_constraint_activates hbc₆ h_is_and
+  have e₇ : r₇ = a₇ * b₇ := and_constraint_activates hbc₇ h_is_and
+  rw [h_r_sum, e₀, e₁, e₂, e₃, e₄, e₅, e₆, e₇]
+
 end SM83.FullSoundness
