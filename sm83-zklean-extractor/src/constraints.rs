@@ -146,6 +146,61 @@ impl AsModule for Sm83Constraints {
         out.push_str("  -- C is boolean\n");
         out.push_str("  ZKBuilder.constrainR1CS step.flag_c (step.flag_c - 1) 0\n\n");
 
+        // -- Sub-constraint: one_hot_constraints (Gap I) --
+        // Enforces: each is_* flag is Boolean AND exactly one is 1.
+        // Split into 4 small chunks so each chunk's bridge has ≤ 6 nested
+        // splits — keeps Lean's `split at h` internal simp within step limits.
+        let opcode_flags = [
+            "is_add", "is_adc", "is_sub", "is_sbc",
+            "is_and", "is_xor", "is_or", "is_cp",
+            "is_inc", "is_dec",
+            "is_rlc", "is_rrc", "is_rl", "is_rr",
+            "is_sla", "is_sra", "is_srl", "is_swap",
+            "is_daa", "is_cpl", "is_ccf", "is_scf",
+        ];
+        // Boolean chunk: 6 or fewer booleans per chunk
+        let chunks: Vec<&[&str]> = vec![
+            &opcode_flags[0..6],
+            &opcode_flags[6..12],
+            &opcode_flags[12..18],
+            &opcode_flags[18..22],
+        ];
+        for (i, chunk) in chunks.iter().enumerate() {
+            out.push_str(&format!(
+                "-- | One-hot boolean chunk {}: {} Boolean constraints.\n",
+                i + 1, chunk.len()
+            ));
+            out.push_str(&format!(
+                "def one_hot_bool_chunk_{} [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n",
+                i + 1
+            ));
+            for flag in chunk.iter() {
+                out.push_str(&format!(
+                    "  ZKBuilder.constrainR1CS step.{flag} (step.{flag} - 1) 0\n"
+                ));
+            }
+            out.push_str("\n");
+        }
+        // Sum-to-1 constraint
+        out.push_str("-- | One-hot sum constraint: sum of all opcode flags = 1.\n");
+        out.push_str("def one_hot_sum_constraint [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        let sum_expr = opcode_flags
+            .iter()
+            .map(|f| format!("step.{f}"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        out.push_str(&format!("  ZKBuilder.constrainEq ({sum_expr}) 1\n\n"));
+
+        // Composed one_hot_constraints
+        out.push_str("-- | One-hot constraint: each opcode flag is Boolean AND sum = 1.\n");
+        out.push_str("-- | Closes Gap I (one-hot enforcement).\n");
+        out.push_str("def one_hot_constraints [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        out.push_str("  one_hot_bool_chunk_1 step\n");
+        out.push_str("  one_hot_bool_chunk_2 step\n");
+        out.push_str("  one_hot_bool_chunk_3 step\n");
+        out.push_str("  one_hot_bool_chunk_4 step\n");
+        out.push_str("  one_hot_sum_constraint step\n\n");
+
         // -- Master constraint: Z flag --
         // is_zero_constraint is ALWAYS applied. It forces:
         //   result * result_inv = 1 - Z  and  Z * result = 0
@@ -154,6 +209,8 @@ impl AsModule for Sm83Constraints {
         // handles flag carry-through — at the step level, Z is always well-defined.
         out.push_str("-- | Master constraints: enforce all flag relationships for one ALU step.\n");
         out.push_str("def master_constraints [ZKField f] (step : SM83StepInputs f) : ZKBuilder f PUnit := do\n");
+        out.push_str("  -- One-hot encoding: ensures exactly one opcode flag is set (Gap I)\n");
+        out.push_str("  one_hot_constraints step\n");
         out.push_str("  -- Z flag: always enforce is_zero relationship\n");
         out.push_str("  is_zero_constraint step\n");
         out.push_str("  -- N flag: must equal 1 for SUB/SBC/CP/DEC/CPL, 0 otherwise\n");

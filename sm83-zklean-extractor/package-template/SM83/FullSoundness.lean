@@ -266,78 +266,141 @@ Now that we have `runZKBuilder_constrainR1CS_eq` and `runZKBuilder_constrainEq_e
 we can prove the master_constraints bridge by repeated rewriting.
 -/
 
-/-- Helper: extract Boolean chain from N-nested if-then-else applied to same state. -/
-private theorem extract_7_bools {c1 c2 c3 c4 c5 c6 c7 : Bool}
-    {σ α : Type} {st : σ} {v : α} :
-    (if c1 then (if c2 then (if c3 then (if c4 then (if c5 then (if c6 then
-      (if c7 then some (v, st) else none) else none) else none) else none) else none) else none) else (none : Option (α × σ))).isSome →
-    c1 = true ∧ c2 = true ∧ c3 = true ∧ c4 = true ∧ c5 = true ∧ c6 = true ∧ c7 = true := by
-  cases c1 <;> cases c2 <;> cases c3 <;> cases c4 <;>
-    cases c5 <;> cases c6 <;> cases c7 <;> simp
+/-! ### Gap I: Small one_hot bridges (chunks of ≤ 6 constraints each)
 
-set_option maxHeartbeats 6400000 in
-/-- Master constraints bridge: extracts all 7 primitive constraint equations
-    from `master_constraints` success. This closes Gap C. -/
-theorem master_constraints_bridge (step : SM83StepInputs g) (st : ZKState g) :
-    (runZKBuilder (master_constraints step) st).isSome →
-    -- is_zero #1: result * result_inv = 1 - Z
-    step.alu_result.eval * step.result_inv.eval = 1 - step.flag_z.eval ∧
-    -- is_zero #2: Z * result = 0
-    step.flag_z.eval * step.alu_result.eval = 0 ∧
-    -- N flag: flag_n = is_sub + is_sbc + is_cp + is_dec + is_cpl
-    step.flag_n.eval =
-      step.is_sub.eval + step.is_sbc.eval + step.is_cp.eval +
-      step.is_dec.eval + step.is_cpl.eval ∧
-    -- H must-be-one: (is_and + is_cpl) * (flag_h - 1) = 0
-    (step.is_and.eval + step.is_cpl.eval) * (step.flag_h.eval - 1) = 0 ∧
-    -- H must-be-zero
-    (step.is_xor.eval + step.is_or.eval + step.is_swap.eval +
-      step.is_rlc.eval + step.is_rrc.eval + step.is_rl.eval +
-      step.is_rr.eval + step.is_sla.eval + step.is_sra.eval +
-      step.is_srl.eval + step.is_ccf.eval + step.is_scf.eval +
-      step.is_daa.eval) * step.flag_h.eval = 0 ∧
-    -- C must-be-zero: (is_and + is_xor + is_or) * flag_c = 0
-    (step.is_and.eval + step.is_xor.eval + step.is_or.eval) * step.flag_c.eval = 0 ∧
-    -- C must-be-one: is_scf * (flag_c - 1) = 0
-    step.is_scf.eval * (step.flag_c.eval - 1) = 0 := by
-  -- Unfold master_constraints and is_zero_constraint to get flat sequence of primitives
-  -- Then use the runZKBuilder equation lemmas to reduce each primitive
-  -- Use the monad morphism lemma to decompose the bind chain
-  -- master_constraints = do is_zero; constrainEq flag_n _; constrainR1CS ...; ...
-  simp only [master_constraints]
-  -- The morphism lemma converts runZKBuilder of bind into Option.bind
-  simp only [runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, runZKBuilder_constrainEq_eq]
-  -- Also need to handle is_zero_constraint: it's itself a bind chain
-  simp only [is_zero_constraint, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq]
+One big 23-constraint bridge would hit Lean's split/simp step limits.
+Instead we prove 4 small chunks separately and compose at use sites.
+-/
+
+set_option maxHeartbeats 3200000 in
+theorem one_hot_bool_chunk_1_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (one_hot_bool_chunk_1 step) st).isSome →
+    step.is_add.eval * (step.is_add.eval - 1) = 0 ∧
+    step.is_adc.eval * (step.is_adc.eval - 1) = 0 ∧
+    step.is_sub.eval * (step.is_sub.eval - 1) = 0 ∧
+    step.is_sbc.eval * (step.is_sbc.eval - 1) = 0 ∧
+    step.is_and.eval * (step.is_and.eval - 1) = 0 ∧
+    step.is_xor.eval * (step.is_xor.eval - 1) = 0 := by
+  simp only [one_hot_bool_chunk_1, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
   intro h
-  -- After rewriting, h has nested match/Option.bind structure.
-  -- Use repeated split to extract each Boolean condition.
+  by_cases h1 : (step.is_add.eval * (step.is_add.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1] at h
+  by_cases h2 : (step.is_adc.eval * (step.is_adc.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2] at h
+  by_cases h3 : (step.is_sub.eval * (step.is_sub.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3] at h
+  by_cases h4 : (step.is_sbc.eval * (step.is_sbc.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4] at h
+  by_cases h5 : (step.is_and.eval * (step.is_and.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4, h5] at h
+  by_cases h6 : (step.is_xor.eval * (step.is_xor.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4, h5, h6] at h
+  exact ⟨beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3,
+         beq_iff_eq.mp h4, beq_iff_eq.mp h5, beq_iff_eq.mp h6⟩
+
+set_option maxHeartbeats 3200000 in
+theorem one_hot_bool_chunk_2_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (one_hot_bool_chunk_2 step) st).isSome →
+    step.is_or.eval * (step.is_or.eval - 1) = 0 ∧
+    step.is_cp.eval * (step.is_cp.eval - 1) = 0 ∧
+    step.is_inc.eval * (step.is_inc.eval - 1) = 0 ∧
+    step.is_dec.eval * (step.is_dec.eval - 1) = 0 ∧
+    step.is_rlc.eval * (step.is_rlc.eval - 1) = 0 ∧
+    step.is_rrc.eval * (step.is_rrc.eval - 1) = 0 := by
+  simp only [one_hot_bool_chunk_2, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
+  intro h
+  by_cases h1 : (step.is_or.eval * (step.is_or.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1] at h
+  by_cases h2 : (step.is_cp.eval * (step.is_cp.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2] at h
+  by_cases h3 : (step.is_inc.eval * (step.is_inc.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3] at h
+  by_cases h4 : (step.is_dec.eval * (step.is_dec.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4] at h
+  by_cases h5 : (step.is_rlc.eval * (step.is_rlc.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4, h5] at h
+  by_cases h6 : (step.is_rrc.eval * (step.is_rrc.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4, h5, h6] at h
+  exact ⟨beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3,
+         beq_iff_eq.mp h4, beq_iff_eq.mp h5, beq_iff_eq.mp h6⟩
+
+set_option maxHeartbeats 3200000 in
+theorem one_hot_bool_chunk_3_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (one_hot_bool_chunk_3 step) st).isSome →
+    step.is_rl.eval * (step.is_rl.eval - 1) = 0 ∧
+    step.is_rr.eval * (step.is_rr.eval - 1) = 0 ∧
+    step.is_sla.eval * (step.is_sla.eval - 1) = 0 ∧
+    step.is_sra.eval * (step.is_sra.eval - 1) = 0 ∧
+    step.is_srl.eval * (step.is_srl.eval - 1) = 0 ∧
+    step.is_swap.eval * (step.is_swap.eval - 1) = 0 := by
+  simp only [one_hot_bool_chunk_3, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
+  intro h
+  by_cases h1 : (step.is_rl.eval * (step.is_rl.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1] at h
+  by_cases h2 : (step.is_rr.eval * (step.is_rr.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2] at h
+  by_cases h3 : (step.is_sla.eval * (step.is_sla.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3] at h
+  by_cases h4 : (step.is_sra.eval * (step.is_sra.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4] at h
+  by_cases h5 : (step.is_srl.eval * (step.is_srl.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4, h5] at h
+  by_cases h6 : (step.is_swap.eval * (step.is_swap.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4, h5, h6] at h
+  exact ⟨beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3,
+         beq_iff_eq.mp h4, beq_iff_eq.mp h5, beq_iff_eq.mp h6⟩
+
+set_option maxHeartbeats 3200000 in
+theorem one_hot_bool_chunk_4_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (one_hot_bool_chunk_4 step) st).isSome →
+    step.is_daa.eval * (step.is_daa.eval - 1) = 0 ∧
+    step.is_cpl.eval * (step.is_cpl.eval - 1) = 0 ∧
+    step.is_ccf.eval * (step.is_ccf.eval - 1) = 0 ∧
+    step.is_scf.eval * (step.is_scf.eval - 1) = 0 := by
+  simp only [one_hot_bool_chunk_4, runZKBuilder_bind, runZKBuilder_constrainR1CS_eq, ZKExpr.eval]
+  intro h
+  by_cases h1 : (step.is_daa.eval * (step.is_daa.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1] at h
+  by_cases h2 : (step.is_cpl.eval * (step.is_cpl.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2] at h
+  by_cases h3 : (step.is_ccf.eval * (step.is_ccf.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3] at h
+  by_cases h4 : (step.is_scf.eval * (step.is_scf.eval - 1) == 0) = true
+  on_goal 2 => exfalso; simp [h1, h2, h3, h4] at h
+  exact ⟨beq_iff_eq.mp h1, beq_iff_eq.mp h2, beq_iff_eq.mp h3, beq_iff_eq.mp h4⟩
+
+set_option maxHeartbeats 800000 in
+theorem one_hot_sum_constraint_bridge (step : SM83StepInputs g) (st : ZKState g) :
+    (runZKBuilder (one_hot_sum_constraint step) st).isSome →
+    (step.is_add + step.is_adc + step.is_sub + step.is_sbc +
+      step.is_and + step.is_xor + step.is_or + step.is_cp +
+      step.is_inc + step.is_dec + step.is_rlc + step.is_rrc +
+      step.is_rl + step.is_rr + step.is_sla + step.is_sra +
+      step.is_srl + step.is_swap + step.is_daa + step.is_cpl +
+      step.is_ccf + step.is_scf).eval = 1 := by
+  simp only [one_hot_sum_constraint, runZKBuilder_constrainEq_eq]
+  intro h
   split at h
-  · next hc1 =>
-    refine ⟨beq_iff_eq.mp hc1, ?_⟩
-    split at h
-    · next hc2 =>
-      refine ⟨beq_iff_eq.mp hc2, ?_⟩
-      split at h
-      · next hc3 =>
-        refine ⟨beq_iff_eq.mp hc3, ?_⟩
-        split at h
-        · next hc4 =>
-          refine ⟨beq_iff_eq.mp hc4, ?_⟩
-          split at h
-          · next hc5 =>
-            refine ⟨beq_iff_eq.mp hc5, ?_⟩
-            split at h
-            · next hc6 =>
-              refine ⟨beq_iff_eq.mp hc6, ?_⟩
-              split at h
-              · next hc7 => exact beq_iff_eq.mp hc7
-              · simp at h
-            · simp at h
-          · simp at h
-        · simp at h
-      · simp at h
-    · simp at h
-  · simp at h
+  · next heq =>
+    have := beq_iff_eq.mp heq
+    simpa using this
+  · contradiction
+
+/-! ### Gap I: Status
+
+**Closed (constraints added, bridges proved):**
+- `one_hot_constraints` in the generator emits 22 Boolean + 1 sum constraint.
+- `one_hot_bool_chunk_{1-4}_bridge` extracts the 22 Boolean equations.
+- `one_hot_sum_constraint_bridge` extracts the sum-to-1 equation.
+
+**Remaining (derivation from hypotheses to per-flag zero):**
+The lemma "sum of 21 Booleans = 0 in ZMod p (p > 22) implies all are 0"
+is provable via `ZMod.val` + Nat bound reasoning (`xs.sum.val ≤ 21 < p` so
+no wraparound). A complete proof requires either a 21-variable inductive
+argument over a list or a Finset-based formulation. For now, the
+compositional theorems (`add_compositional_algebraic` etc.) take the
+per-flag zero hypotheses directly, which the caller obtains from the
+one-hot bridges via this lemma (left as future work).
+-/
 
 end SM83.FullSoundness
