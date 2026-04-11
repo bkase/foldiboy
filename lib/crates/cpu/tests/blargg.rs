@@ -4,8 +4,8 @@ use common::{make_cpu, vram_contains, GameBoyTestBus, MAX_CYCLES};
 use cpu::GbCpu;
 use memory::Bus;
 
-const BLARGG_DIR: &str = "../../../../ref/gb-test-roms/cpu_instrs/individual/";
-const BLARGG_ROOT: &str = "../../../../ref/gb-test-roms/";
+const BLARGG_DIR: &str = "../../../ref/gb-test-roms/cpu_instrs/individual/";
+const BLARGG_ROOT: &str = "../../../ref/gb-test-roms/";
 
 fn run_blargg_test(rom_path: &str) -> (bool, String) {
     let mut cpu = match make_cpu(rom_path) {

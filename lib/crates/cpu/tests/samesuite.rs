@@ -4,7 +4,7 @@ use common::{make_cpu, GameBoyTestBus, MAX_CYCLES};
 use cpu::GbCpu;
 use memory::Bus;
 
-const SAMESUITE_DIR: &str = "../../../../ref/SameSuite/";
+const SAMESUITE_DIR: &str = "../../../ref/SameSuite/";
 
 /// SameSuite pass/fail detection.
 ///

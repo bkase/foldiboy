@@ -1208,6 +1208,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "foldiboy-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cpal",
+ "env_logger",
+ "log",
+ "pollster",
+ "ringbuf",
+ "tokio",
+ "wasi-frame-buffer-wasmtime",
+ "wasi-graphics-context-wasmtime",
+ "wasi-surface-wasmtime",
+ "wasi-webgpu-wasmtime",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-io",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2109,27 +2130,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys",
-]
-
-[[package]]
-name = "foldiboy-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cpal",
- "env_logger",
- "log",
- "pollster",
- "ringbuf",
- "tokio",
- "wasi-frame-buffer-wasmtime",
- "wasi-graphics-context-wasmtime",
- "wasi-surface-wasmtime",
- "wasi-webgpu-wasmtime",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-wasi-io",
 ]
 
 [[package]]

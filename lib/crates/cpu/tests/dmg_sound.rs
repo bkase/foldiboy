@@ -4,7 +4,7 @@ use common::{make_cpu, vram_contains, GameBoyTestBus, MAX_CYCLES};
 use cpu::GbCpu;
 use memory::Bus;
 
-const DMG_SOUND_DIR: &str = "../../../../ref/gb-test-roms/dmg_sound/rom_singles/";
+const DMG_SOUND_DIR: &str = "../../../ref/gb-test-roms/dmg_sound/rom_singles/";
 
 fn run_dmg_sound_test(rom_path: &str) -> (bool, String) {
     let mut cpu = match make_cpu(rom_path) {

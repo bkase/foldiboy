@@ -68,7 +68,7 @@ fn diagnose_register_readback() {
 /// Trace test 08 ROM execution, capturing NR52 writes and length counter state.
 #[test]
 fn trace_test_08_nr52_and_lengths() {
-    let rom_path = "../../../../ref/gb-test-roms/dmg_sound/rom_singles/08-len ctr during power.gb";
+    let rom_path = "../../../ref/gb-test-roms/dmg_sound/rom_singles/08-len ctr during power.gb";
     let mut cpu = make_cpu(rom_path).unwrap();
 
     // Track NR52 writes

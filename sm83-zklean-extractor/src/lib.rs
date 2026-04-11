@@ -11,3 +11,5 @@ pub mod spec_gen;
 pub mod bitvec_bridge;
 pub mod proofs_gen;
 pub mod instruction_proofs_gen;
+pub mod regfile_gen;
+pub mod decode_gen;

@@ -191,6 +191,23 @@ impl AsModule for Sm83Spec {
             ));
         }
 
+        // -- Manual specs for opcodes without lookup tables in `Sm83Table`. --
+        // Translated directly from the matching Rust functions in `cpu::alu`:
+        //   ADC/SBC/CP : `alu_binary` cases (with carry_in)
+        //   RL/RR      : `alu_shift` cases (rotate-through-carry)
+        //   CPL        : bitwise NOT (`a ^ 0xFF`)
+        //   CCF/SCF    : accumulator unchanged (flag-only ops)
+        out.push_str("-- Specs for opcodes that don't have an `Sm83Table` entry.\n");
+        out.push_str("-- Translated from the matching Rust functions in `cpu::alu`.\n\n");
+        out.push_str("def spec_adc (a b c : BitVec 8) : BitVec 8 := a + b + c\n\n");
+        out.push_str("def spec_sbc (a b c : BitVec 8) : BitVec 8 := a - b - c\n\n");
+        out.push_str("def spec_cp (a b : BitVec 8) : BitVec 8 := a - b\n\n");
+        out.push_str("def spec_rl (a c : BitVec 8) : BitVec 8 := (a <<< 1) ||| (c &&& 0x01#8)\n\n");
+        out.push_str("def spec_rr (a c : BitVec 8) : BitVec 8 := (a >>> 1) ||| ((c &&& 0x01#8) <<< 7)\n\n");
+        out.push_str("def spec_cpl (a : BitVec 8) : BitVec 8 := a ^^^ 0xFF#8\n\n");
+        out.push_str("def spec_ccf (a : BitVec 8) : BitVec 8 := a\n\n");
+        out.push_str("def spec_scf (a : BitVec 8) : BitVec 8 := a\n\n");
+
         Ok(Module {
             name: "Spec".into(),
             imports: vec![],

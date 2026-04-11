@@ -11,3 +11,8 @@ import SM83.InstructionProofs
 import SM83.SemanticBridge
 import SM83.EndToEnd
 import SM83.FullSoundness
+import SM83.ZmodBitVecBridge
+import SM83.EndToEndDerived
+import SM83.RegFile
+import SM83.Decode
+import SM83.Refinement

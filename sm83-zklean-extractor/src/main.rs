@@ -5,11 +5,13 @@ use clap::Parser;
 
 use sm83_zklean_extractor::bitvec_bridge::Sm83BitVecBridge;
 use sm83_zklean_extractor::constraints::{Sm83Constraints, Sm83StepInputs};
+use sm83_zklean_extractor::decode_gen::Sm83Decode;
 use sm83_zklean_extractor::instructions::Sm83Instructions;
 use sm83_zklean_extractor::lookups::Sm83LookupTables;
 use sm83_zklean_extractor::modules::{make_sm83_zk_lean_package, AsModule, FSError};
 use sm83_zklean_extractor::proofs_gen::Sm83Proofs;
 use sm83_zklean_extractor::instruction_proofs_gen::Sm83InstructionProofs;
+use sm83_zklean_extractor::regfile_gen::Sm83RegFile;
 use sm83_zklean_extractor::spec_gen::Sm83Spec;
 use sm83_zklean_extractor::tests_gen::Sm83Tests;
 
@@ -36,6 +38,8 @@ fn extract_modules() -> Vec<Box<dyn AsModule>> {
         Box::new(Sm83BitVecBridge::extract()),
         Box::new(Sm83Proofs::extract()),
         Box::new(Sm83InstructionProofs::extract()),
+        Box::new(Sm83RegFile::extract()),
+        Box::new(Sm83Decode::extract()),
     ]
 }
 
